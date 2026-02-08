@@ -125,8 +125,12 @@ export function scheduleFollowupDrain(
       defaultRuntime.error?.(`followup queue drain failed for ${key}: ${String(err)}`);
     } finally {
       queue.draining = false;
+      const current = FOLLOWUP_QUEUES.get(key);
       if (queue.items.length === 0 && queue.droppedCount === 0) {
-        FOLLOWUP_QUEUES.delete(key);
+        // Guard against deleting a newer queue created after clear/re-enqueue.
+        if (current === queue) {
+          FOLLOWUP_QUEUES.delete(key);
+        }
       } else {
         scheduleFollowupDrain(key, runFollowup);
       }

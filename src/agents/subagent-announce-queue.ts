@@ -111,10 +111,17 @@ async function sendIfFresh(queue: AnnounceQueueState, key: string, item: Announc
     );
     return;
   }
-  defaultRuntime.log?.(
-    `[subagent_announce_metric] queue_delivery key=${key} queue_age_ms=${queueAgeMs}`,
-  );
-  await queue.send(item);
+  try {
+    await queue.send(item);
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] queue_delivery key=${key} queue_age_ms=${queueAgeMs}`,
+    );
+  } catch (err) {
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] queue_delivery_failed key=${key} queue_age_ms=${queueAgeMs} error=${encodeURIComponent(String(err))}`,
+    );
+    throw err;
+  }
 }
 
 function scheduleAnnounceDrain(key: string) {

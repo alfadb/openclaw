@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
-import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
+import { clearFollowupQueue, enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 
 function createRun(params: {
   prompt: string;
@@ -282,5 +282,30 @@ describe("followup queue collect routing", () => {
     expect(calls[0]?.prompt).toContain("[Queued messages while agent was busy]");
     expect(calls[0]?.originatingChannel).toBe("slack");
     expect(calls[0]?.originatingTo).toBe("channel:A");
+  });
+
+  it("keeps new queue items when clear happens during an older drain", async () => {
+    const key = `test-clear-during-drain-${Date.now()}`;
+    const settings: QueueSettings = {
+      mode: "followup",
+      debounceMs: 0,
+      cap: 50,
+      dropPolicy: "summarize",
+    };
+
+    const calls: string[] = [];
+    const runFollowup = async (run: FollowupRun) => {
+      calls.push(run.prompt);
+      if (run.prompt === "old") {
+        clearFollowupQueue(key);
+        enqueueFollowupRun(key, createRun({ prompt: "new" }), settings);
+        scheduleFollowupDrain(key, runFollowup);
+      }
+    };
+
+    enqueueFollowupRun(key, createRun({ prompt: "old" }), settings);
+    scheduleFollowupDrain(key, runFollowup);
+
+    await expect.poll(() => calls).toEqual(["old", "new"]);
   });
 });
