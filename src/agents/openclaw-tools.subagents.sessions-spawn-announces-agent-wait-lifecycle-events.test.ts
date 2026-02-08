@@ -136,7 +136,7 @@ describe("openclaw-tools: subagents", () => {
 
     // Second call: main agent trigger
     const second = agentCalls[1]?.params as { sessionKey?: string; deliver?: boolean } | undefined;
-    expect(second?.sessionKey).toBe("discord:group:req");
+    expect(second?.sessionKey).toBe("agent:main:discord:group:req");
     expect(second?.deliver).toBe(true);
 
     // No direct send to external channel (main agent handles delivery)
