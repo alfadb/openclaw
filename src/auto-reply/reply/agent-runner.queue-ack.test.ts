@@ -151,6 +151,8 @@ describe("runReplyAgent group busy ack", () => {
       typingMode: "instant",
     });
 
+    expect(enqueueFollowupRunMock).toHaveBeenCalledTimes(1);
+    expect(clearFollowupQueueMock).not.toHaveBeenCalled();
     expect(result).toBeUndefined();
   });
 });
