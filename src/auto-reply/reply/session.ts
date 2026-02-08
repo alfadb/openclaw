@@ -167,6 +167,36 @@ export async function initSessionState(params: {
   const trimmedBodyLower = trimmedBody.toLowerCase();
   const strippedForResetLower = strippedForReset.toLowerCase();
 
+  const matchResetInMultiline = (trigger: string): { matched: boolean; stripped?: string } => {
+    const lines = strippedForReset
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length <= 1) {
+      return { matched: false };
+    }
+    const triggerLower = trigger.toLowerCase();
+    const triggerPrefixLower = `${triggerLower} `;
+
+    // If multiple inbound messages were merged into one payload, honor the LAST
+    // standalone reset line and keep only content after that line.
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i] ?? "";
+      const lineLower = line.toLowerCase();
+      if (lineLower !== triggerLower && !lineLower.startsWith(triggerPrefixLower)) {
+        continue;
+      }
+      const inlineArg = line.slice(trigger.length).trimStart();
+      const trailing = lines
+        .slice(i + 1)
+        .join("\n")
+        .trim();
+      const stripped = [inlineArg, trailing].filter(Boolean).join("\n").trim();
+      return { matched: true, stripped };
+    }
+    return { matched: false };
+  };
+
   for (const trigger of resetTriggers) {
     if (!trigger) {
       continue;
@@ -188,6 +218,13 @@ export async function initSessionState(params: {
     ) {
       isNewSession = true;
       bodyStripped = strippedForReset.slice(trigger.length).trimStart();
+      resetTriggered = true;
+      break;
+    }
+    const multi = matchResetInMultiline(trigger);
+    if (multi.matched) {
+      isNewSession = true;
+      bodyStripped = multi.stripped ?? "";
       resetTriggered = true;
       break;
     }
