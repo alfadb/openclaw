@@ -23,27 +23,58 @@ import {
   waitForEmbeddedPiRunEnd,
 } from "./pi-embedded.js";
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
-import { resolveSubagentAnnounceDeliveryTimeoutMs } from "./timeout.js";
+import {
+  resolveSubagentAnnounceDeliveryTimeoutMs,
+  resolveSubagentAnnounceMaxAgeMs,
+} from "./timeout.js";
 import { readLatestAssistantReply } from "./tools/agent-step.js";
 
 const MULTI_RUN_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RECENT_TASK_RUNS = new Map<string, Map<string, number>>();
+const RECENT_SAME_RUN_ANNOUNCE = new Map<string, number>();
+
+export function __resetSubagentAnnounceStateForTests() {
+  RECENT_TASK_RUNS.clear();
+  RECENT_SAME_RUN_ANNOUNCE.clear();
+}
 
 function normalizeTaskIdentity(task?: string, label?: string) {
   const raw = (label || task || "").trim().toLowerCase().replace(/\s+/g, " ");
   return raw || "(unknown-task)";
 }
 
-function registerTaskRun(taskKey: string, runId: string, now = Date.now()) {
-  const runs = RECENT_TASK_RUNS.get(taskKey) ?? new Map<string, number>();
-  for (const [rid, ts] of runs.entries()) {
-    if (now - ts > MULTI_RUN_WINDOW_MS) {
-      runs.delete(rid);
+function sweepRecentTaskRuns(now = Date.now()) {
+  for (const [taskKey, runs] of RECENT_TASK_RUNS.entries()) {
+    for (const [rid, ts] of runs.entries()) {
+      if (now - ts > MULTI_RUN_WINDOW_MS) {
+        runs.delete(rid);
+      }
+    }
+    if (runs.size === 0) {
+      RECENT_TASK_RUNS.delete(taskKey);
     }
   }
+}
+
+function registerTaskRun(taskKey: string, runId: string, now = Date.now()) {
+  sweepRecentTaskRuns(now);
+  const runs = RECENT_TASK_RUNS.get(taskKey) ?? new Map<string, number>();
   runs.set(runId, now);
   RECENT_TASK_RUNS.set(taskKey, runs);
   return Array.from(runs.keys());
+}
+
+function seenSameRunAnnounce(key: string, now = Date.now()): boolean {
+  for (const [candidate, ts] of RECENT_SAME_RUN_ANNOUNCE.entries()) {
+    if (now - ts > MULTI_RUN_WINDOW_MS) {
+      RECENT_SAME_RUN_ANNOUNCE.delete(candidate);
+    }
+  }
+  return RECENT_SAME_RUN_ANNOUNCE.has(key);
+}
+
+function markSameRunAnnounce(key: string, now = Date.now()) {
+  RECENT_SAME_RUN_ANNOUNCE.set(key, now);
 }
 
 function formatDurationShort(valueMs?: number) {
@@ -209,6 +240,7 @@ async function maybeQueueSubagentAnnounce(params: {
   summaryLine?: string;
   requesterOrigin?: DeliveryContext;
   highPriority?: boolean;
+  maxAgeMs?: number;
 }): Promise<"steered" | "queued" | "none"> {
   const { cfg, entry } = loadRequesterSessionEntry(params.requesterSessionKey);
   const canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);
@@ -239,7 +271,7 @@ async function maybeQueueSubagentAnnounce(params: {
     queueSettings.mode === "interrupt";
   if (isActive && (shouldFollowup || queueSettings.mode === "steer")) {
     const origin = resolveAnnounceOrigin(entry, params.requesterOrigin);
-    enqueueAnnounce({
+    const didQueue = enqueueAnnounce({
       key: canonicalKey,
       item: {
         prompt: params.triggerMessage,
@@ -249,10 +281,13 @@ async function maybeQueueSubagentAnnounce(params: {
         origin,
         highPriority: params.highPriority,
       },
-      settings: queueSettings,
+      settings: {
+        ...queueSettings,
+        maxAgeMs: params.maxAgeMs,
+      },
       send: sendAnnounce,
     });
-    return "queued";
+    return didQueue ? "queued" : "none";
   }
 
   return "none";
@@ -527,9 +562,34 @@ export async function runSubagentAnnounceFlow(params: {
     const announceType = params.announceType ?? "subagent task";
     const taskLabel = params.label || params.task || "task";
     const taskIdentity = normalizeTaskIdentity(params.task, params.label);
-    const taskRunKey = `${params.requesterSessionKey}::${taskIdentity}`;
+    const taskIdentityLog = encodeURIComponent(taskIdentity);
+    const canonicalRequesterKey = resolveRequesterStoreKey(
+      loadConfig(),
+      params.requesterSessionKey,
+    );
+    const taskRunKey = `${canonicalRequesterKey}::${taskIdentity}`;
     const seenRunIds = registerTaskRun(taskRunKey, params.childRunId);
-    const hasMultipleActualRuns = seenRunIds.length > 1;
+    const shouldWarnMultipleRuns = announceType !== "cron job";
+    const hasMultipleActualRuns = shouldWarnMultipleRuns && seenRunIds.length > 1;
+    const announceState = outcome.status;
+    const sameRunAnnounceKey = `${canonicalRequesterKey}|${taskIdentity}|${params.childRunId}|${announceState}`;
+    const isSameRunDuplicate = seenSameRunAnnounce(sameRunAnnounceKey);
+    if (isSameRunDuplicate) {
+      defaultRuntime.log?.(
+        `[subagent_announce_metric] announce_deduped_same_run session=${canonicalRequesterKey} task=${taskIdentityLog} run_id=${params.childRunId}`,
+      );
+      didAnnounce = true;
+    }
+
+    if (!isSameRunDuplicate && hasMultipleActualRuns) {
+      defaultRuntime.log?.(
+        `[subagent_announce_metric] multi_execution_detected session=${canonicalRequesterKey} task=${taskIdentityLog} run_ids=${seenRunIds.join("|")}`,
+      );
+    }
+
+    if (isSameRunDuplicate) {
+      return true;
+    }
 
     const triggerMessage = [
       `A ${announceType} "${taskLabel}" just ${statusLabel}.`,
@@ -550,18 +610,22 @@ export async function runSubagentAnnounceFlow(params: {
       "You can respond with NO_REPLY if no announcement is needed (e.g., internal task with no user-facing result).",
     ].join("\n");
 
+    const announceMaxAgeMs = resolveSubagentAnnounceMaxAgeMs(loadConfig());
     const queued = await maybeQueueSubagentAnnounce({
-      requesterSessionKey: params.requesterSessionKey,
+      requesterSessionKey: canonicalRequesterKey,
       triggerMessage,
       summaryLine: taskLabel,
       requesterOrigin,
       highPriority: hasMultipleActualRuns,
+      maxAgeMs: announceMaxAgeMs,
     });
     if (queued === "steered") {
+      markSameRunAnnounce(sameRunAnnounceKey);
       didAnnounce = true;
       return true;
     }
     if (queued === "queued") {
+      markSameRunAnnounce(sameRunAnnounceKey);
       didAnnounce = true;
       return true;
     }
@@ -569,14 +633,14 @@ export async function runSubagentAnnounceFlow(params: {
     // Send to main agent - it will respond in its own voice
     let directOrigin = requesterOrigin;
     if (!directOrigin) {
-      const { entry } = loadRequesterSessionEntry(params.requesterSessionKey);
+      const { entry } = loadRequesterSessionEntry(canonicalRequesterKey);
       directOrigin = deliveryContextFromSession(entry);
     }
     const announceDeliveryTimeoutMs = resolveSubagentAnnounceDeliveryTimeoutMs(loadConfig());
     await callGateway({
       method: "agent",
       params: {
-        sessionKey: params.requesterSessionKey,
+        sessionKey: canonicalRequesterKey,
         message: triggerMessage,
         deliver: true,
         channel: directOrigin?.channel,
@@ -592,6 +656,7 @@ export async function runSubagentAnnounceFlow(params: {
       timeoutMs: announceDeliveryTimeoutMs,
     });
 
+    markSameRunAnnounce(sameRunAnnounceKey);
     didAnnounce = true;
   } catch (err) {
     defaultRuntime.error?.(`Subagent announce failed: ${String(err)}`);
