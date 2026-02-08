@@ -195,6 +195,48 @@ describe("initSessionState RawBody", () => {
 
     expect(result.triggerBodyNormalized).toBe("/status");
   });
+
+  it("treats merged multiline payload with trailing /new as reset", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-rawbody-reset-merged-tail-"));
+    const storePath = path.join(root, "sessions.json");
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const ctx = {
+      RawBody: "提炼要点，这个是我们接下来要干的事\n/new",
+      SessionKey: "agent:main:feishu:dm:u1",
+    };
+
+    const result = await initSessionState({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.bodyStripped ?? "").toBe("");
+  });
+
+  it("treats merged multiline payload with /new then follow-up text as reset and keeps trailing text", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "openclaw-rawbody-reset-merged-followup-"),
+    );
+    const storePath = path.join(root, "sessions.json");
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+
+    const ctx = {
+      RawBody: "/new\n分析为什么/new还是携带了上下文内容",
+      SessionKey: "agent:main:feishu:dm:u1",
+    };
+
+    const result = await initSessionState({
+      ctx,
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.bodyStripped).toBe("分析为什么/new还是携带了上下文内容");
+  });
 });
 
 describe("initSessionState reset policy", () => {
