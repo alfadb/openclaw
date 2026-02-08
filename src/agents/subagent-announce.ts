@@ -562,6 +562,7 @@ export async function runSubagentAnnounceFlow(params: {
     const announceType = params.announceType ?? "subagent task";
     const taskLabel = params.label || params.task || "task";
     const taskIdentity = normalizeTaskIdentity(params.task, params.label);
+    const taskIdentityLog = encodeURIComponent(taskIdentity);
     const canonicalRequesterKey = resolveRequesterStoreKey(
       loadConfig(),
       params.requesterSessionKey,
@@ -575,14 +576,14 @@ export async function runSubagentAnnounceFlow(params: {
     const isSameRunDuplicate = seenSameRunAnnounce(sameRunAnnounceKey);
     if (isSameRunDuplicate) {
       defaultRuntime.log?.(
-        `[subagent_announce_metric] announce_deduped_same_run session=${canonicalRequesterKey} task=${taskIdentity} run_id=${params.childRunId}`,
+        `[subagent_announce_metric] announce_deduped_same_run session=${canonicalRequesterKey} task=${taskIdentityLog} run_id=${params.childRunId}`,
       );
       didAnnounce = true;
     }
 
     if (!isSameRunDuplicate && hasMultipleActualRuns) {
       defaultRuntime.log?.(
-        `[subagent_announce_metric] multi_execution_detected session=${canonicalRequesterKey} task=${taskIdentity} run_ids=${seenRunIds.join("|")}`,
+        `[subagent_announce_metric] multi_execution_detected session=${canonicalRequesterKey} task=${taskIdentityLog} run_ids=${seenRunIds.join("|")}`,
       );
     }
 
