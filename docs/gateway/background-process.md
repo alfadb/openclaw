@@ -38,6 +38,7 @@ Environment overrides:
 - `PI_BASH_YIELD_MS`: default yield (ms)
 - `PI_BASH_MAX_OUTPUT_CHARS`: in‑memory output cap (chars)
 - `OPENCLAW_BASH_PENDING_MAX_OUTPUT_CHARS`: pending stdout/stderr cap per stream (chars)
+- `OPENCLAW_EXEC_RESULT_MAX_CHARS`: max chars from exec output included in tool results sent to the model (hard clamp 1000–50000)
 - `PI_BASH_JOB_TTL_MS`: TTL for finished sessions (ms, bounded to 1m–3h)
 
 Config (preferred):
