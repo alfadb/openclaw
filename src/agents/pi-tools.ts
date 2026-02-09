@@ -97,6 +97,7 @@ function resolveExecConfig(cfg: OpenClawConfig | undefined) {
     safeBins: globalExec?.safeBins,
     backgroundMs: globalExec?.backgroundMs,
     timeoutSec: globalExec?.timeoutSec,
+    resultMaxChars: globalExec?.resultMaxChars,
     approvalRunningNoticeMs: globalExec?.approvalRunningNoticeMs,
     cleanupMs: globalExec?.cleanupMs,
     notifyOnExit: globalExec?.notifyOnExit,
@@ -290,6 +291,7 @@ export function createOpenClawCodingTools(options?: {
     timeoutSec: options?.exec?.timeoutSec ?? execConfig.timeoutSec,
     approvalRunningNoticeMs:
       options?.exec?.approvalRunningNoticeMs ?? execConfig.approvalRunningNoticeMs,
+    resultMaxChars: options?.exec?.resultMaxChars ?? execConfig.resultMaxChars,
     notifyOnExit: options?.exec?.notifyOnExit ?? execConfig.notifyOnExit,
     sandbox: sandbox
       ? {

@@ -283,6 +283,7 @@ export const AgentToolsSchema = z
         safeBins: z.array(z.string()).optional(),
         backgroundMs: z.number().int().positive().optional(),
         timeoutSec: z.number().int().positive().optional(),
+        resultMaxChars: z.number().int().positive().optional(),
         approvalRunningNoticeMs: z.number().int().nonnegative().optional(),
         cleanupMs: z.number().int().positive().optional(),
         notifyOnExit: z.boolean().optional(),
@@ -535,6 +536,7 @@ export const ToolsSchema = z
         safeBins: z.array(z.string()).optional(),
         backgroundMs: z.number().int().positive().optional(),
         timeoutSec: z.number().int().positive().optional(),
+        resultMaxChars: z.number().int().positive().optional(),
         cleanupMs: z.number().int().positive().optional(),
         notifyOnExit: z.boolean().optional(),
         applyPatch: z
