@@ -119,7 +119,7 @@ const DEFAULT_PENDING_MAX_OUTPUT = clampWithDefault(
   200_000,
 );
 
-const DEFAULT_RESULT_MAX_OUTPUT = clampNumber(
+const DEFAULT_RESULT_MAX_OUTPUT = clampWithDefault(
   readEnvInt("OPENCLAW_EXEC_RESULT_MAX_CHARS"),
   20_000,
   1_000,
@@ -889,7 +889,7 @@ export function createExecTool(
 
       const maxOutput = DEFAULT_MAX_OUTPUT;
       const pendingMaxOutput = DEFAULT_PENDING_MAX_OUTPUT;
-      const resultMaxChars = clampNumber(
+      const resultMaxChars = clampWithDefault(
         defaults?.resultMaxChars,
         DEFAULT_RESULT_MAX_OUTPUT,
         1_000,
