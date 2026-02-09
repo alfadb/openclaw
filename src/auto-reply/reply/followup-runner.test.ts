@@ -95,7 +95,9 @@ describe("createFollowupRunner preemptive exec result cap", () => {
 
     await runner(queued);
 
-    const call = runEmbeddedPiAgentMock.mock.calls[0]?.[0] as any;
+    const call = runEmbeddedPiAgentMock.mock.calls[0]?.[0] as unknown as {
+      execOverrides?: { resultMaxChars?: number };
+    };
     expect(call.execOverrides?.resultMaxChars).toBe(4000);
   });
 });
