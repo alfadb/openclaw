@@ -88,6 +88,9 @@ Docs: https://docs.openclaw.ai
 - Telegram: remove last `@ts-nocheck` from `bot-handlers.ts`, use Grammy types directly, deduplicate `StickerMetadata`. Zero `@ts-nocheck` remaining in `src/telegram/`. (#9206)
 - Telegram: remove `@ts-nocheck` from `bot-message.ts`, type deps via `Omit<BuildTelegramMessageContextParams>`, widen `allMedia` to `TelegramMediaRef[]`. (#9180)
 - Telegram: remove `@ts-nocheck` from `bot.ts`, fix duplicate `bot.catch` error handler (Grammy overrides), remove dead reaction `message_thread_id` routing, harden sticker cache guard. (#9077)
+- Telegram: allow per-group and per-topic `groupPolicy` overrides under `channels.telegram.groups`. (#9775) Thanks @nicolasstanley.
+- Telegram: add video note support (`asVideoNote: true`) for media sends, with docs + tests. (#7902) Thanks @thewulf7.
+- Feishu: expand channel handling (posts with images, doc links, routing, reactions/typing, replies, native commands). (#8975) Thanks @jiulingyun.
 - Onboarding: add Cloudflare AI Gateway provider setup and docs. (#7914) Thanks @roerohan.
 - Onboarding: add Moonshot (.cn) auth choice and keep the China base URL when preserving defaults. (#7180) Thanks @waynelwz.
 - Docs: clarify tmux send-keys for TUI by splitting text and Enter. (#7737) Thanks @Wangnov.
@@ -103,7 +106,10 @@ Docs: https://docs.openclaw.ai
 ### Fixes
 
 - Heartbeat: allow explicit accountId routing for multi-account channels. (#8702) Thanks @lsh411.
+- Routing: refresh bindings per message by loading config at route resolution so binding changes apply without restart. (#11372) Thanks @juanpablodlc.
 - TUI/Gateway: handle non-streaming finals, refresh history for non-local chat runs, and avoid event gap warnings for targeted tool streams. (#8432) Thanks @gumadeiras.
+- Security: stop exposing Gateway auth tokens via URL query parameters in Control UI entrypoints, and reject hook tokens in query parameters. (#9436) Thanks @coygeek.
+- Skills: ignore Python venvs and common cache/build folders in the skills watcher to prevent FD exhaustion. (#12399) Thanks @kylehowells.
 - Shell completion: auto-detect and migrate slow dynamic patterns to cached files for faster terminal startup; add completion health checks to doctor/update/onboard.
 - Telegram: honor session model overrides in inline model selection. (#8193) Thanks @gildo.
 - Web UI: fix agent model selection saves for default/non-default agents and wrap long workspace paths. Thanks @Takhoffman.
