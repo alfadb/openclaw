@@ -197,6 +197,17 @@ export async function initSessionState(params: {
   const entry = sessionStore[sessionKey];
   const previousSessionEntry = resetTriggered && entry ? { ...entry } : undefined;
   const now = Date.now();
+
+  // Circuit breaker: if the previous session repeatedly overflowed context and was marked
+  // unhealthy, auto-start a fresh session so we don't keep routing user messages into a
+  // dead session that can no longer make progress.
+  let recoveredFromUnhealthy = false;
+  let recoveredFromUnhealthyReason: string | undefined;
+  if (!resetTriggered && entry?.unhealthyUntil && entry.unhealthyUntil > now) {
+    isNewSession = true;
+    recoveredFromUnhealthy = true;
+    recoveredFromUnhealthyReason = entry.unhealthyReason;
+  }
   const isThread = resolveThreadFlag({
     sessionKey,
     messageThreadId: ctx.MessageThreadId,
@@ -338,6 +349,14 @@ export async function initSessionState(params: {
     sessionEntry.compactionCount = 0;
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
+    sessionEntry.unhealthyUntil = undefined;
+    sessionEntry.unhealthyReason = undefined;
+    sessionEntry.overflowErrorStreak = undefined;
+    sessionEntry.overflowErrorAt = undefined;
+    if (recoveredFromUnhealthy) {
+      sessionEntry.recoveredFromUnhealthy = true;
+      sessionEntry.recoveredFromUnhealthyReason = recoveredFromUnhealthyReason;
+    }
     // Clear stale token metrics from previous session so /status doesn't
     // display the old session's context usage after /new or /reset.
     sessionEntry.totalTokens = undefined;

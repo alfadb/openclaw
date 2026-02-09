@@ -9,6 +9,7 @@ import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
 import { runEmbeddedPiAgent } from "../../agents/pi-embedded.js";
+import { updateSessionStore } from "../../config/sessions.js";
 import { resolveAgentIdFromSessionKey, type SessionEntry } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
@@ -211,6 +212,50 @@ export function createFollowupRunner(params: {
           providerUsed: fallbackProvider,
           contextTokensUsed,
           logLabel: "followup",
+        });
+
+        // Session unhealthy circuit breaker:
+        // If the agent returns a context overflow / compaction failure, record a streak.
+        // After 2 consecutive overflow-like failures within 10 minutes, mark the session
+        // unhealthy for 30 minutes so the next inbound message auto-resets to a fresh session.
+        const errorKind = runResult.meta.error?.kind;
+        await updateSessionStore(storePath, (store) => {
+          const entry = store[sessionKey];
+          if (!entry) {
+            return;
+          }
+          const now = Date.now();
+          const windowMs = 10 * 60 * 1000;
+          const unhealthyMs = 30 * 60 * 1000;
+          const isOverflow = errorKind === "context_overflow" || errorKind === "compaction_failure";
+
+          if (!isOverflow) {
+            // Clear streak on success or other error kinds.
+            store[sessionKey] = {
+              ...entry,
+              overflowErrorStreak: undefined,
+              overflowErrorAt: undefined,
+              unhealthyUntil: undefined,
+              unhealthyReason: undefined,
+              updatedAt: Date.now(),
+            };
+            return;
+          }
+
+          const lastAt = entry.overflowErrorAt ?? 0;
+          const prevStreak = entry.overflowErrorStreak ?? 0;
+          const nextStreak = lastAt > 0 && now - lastAt <= windowMs ? prevStreak + 1 : 1;
+          const next: typeof entry = {
+            ...entry,
+            overflowErrorStreak: nextStreak,
+            overflowErrorAt: now,
+            updatedAt: Date.now(),
+          };
+          if (nextStreak >= 2) {
+            next.unhealthyUntil = now + unhealthyMs;
+            next.unhealthyReason = errorKind;
+          }
+          store[sessionKey] = next;
         });
       }
 
