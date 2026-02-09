@@ -55,7 +55,8 @@ describe("Nix integration (U3, U5, U9)", () => {
         { OPENCLAW_HOME: customHome, OPENCLAW_STATE_DIR: undefined },
         async () => {
           const { STATE_DIR } = await import("./config.js");
-          expect(STATE_DIR).toBe(path.join(path.resolve(customHome), ".openclaw"));
+          const fsRoot = path.parse(process.cwd()).root;
+          expect(STATE_DIR).toBe(path.join(fsRoot, "custom", "home", ".openclaw"));
         },
       );
     });
@@ -70,8 +71,9 @@ describe("Nix integration (U3, U5, U9)", () => {
         },
         async () => {
           const { CONFIG_PATH } = await import("./config.js");
+          const fsRoot = path.parse(process.cwd()).root;
           expect(CONFIG_PATH).toBe(
-            path.join(path.resolve(customHome), ".openclaw", "openclaw.json"),
+            path.join(fsRoot, "custom", "home", ".openclaw", "openclaw.json"),
           );
         },
       );
