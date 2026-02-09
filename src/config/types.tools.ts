@@ -177,6 +177,8 @@ export type ExecToolConfig = {
   backgroundMs?: number;
   /** Default timeout (seconds) before auto-killing exec commands. */
   timeoutSec?: number;
+  /** Max characters from exec output to include in tool results sent to the model (does not affect process log cache). */
+  resultMaxChars?: number;
   /** Emit a running notice (ms) when approval-backed exec runs long (default: 10000, 0 = off). */
   approvalRunningNoticeMs?: number;
   /** How long to keep finished sessions in memory (ms). */

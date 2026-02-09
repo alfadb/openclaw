@@ -117,6 +117,14 @@ const DEFAULT_PENDING_MAX_OUTPUT = clampNumber(
   1_000,
   200_000,
 );
+
+const DEFAULT_RESULT_MAX_OUTPUT = clampNumber(
+  readEnvInt("OPENCLAW_EXEC_RESULT_MAX_CHARS"),
+  20_000,
+  1_000,
+  50_000,
+);
+
 const DEFAULT_PATH =
   process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const DEFAULT_NOTIFY_TAIL_CHARS = 400;
@@ -173,6 +181,8 @@ export type ExecToolDefaults = {
   agentId?: string;
   backgroundMs?: number;
   timeoutSec?: number;
+  /** Max characters from exec output to include in tool results sent to the model (does not affect process log cache). */
+  resultMaxChars?: number;
   approvalRunningNoticeMs?: number;
   sandbox?: BashSandboxConfig;
   elevated?: ExecElevatedDefaults;
@@ -255,6 +265,9 @@ export type ExecToolDetails =
       durationMs: number;
       aggregated: string;
       cwd?: string;
+      truncated?: boolean;
+      originalChars?: number;
+      keptChars?: number;
     }
   | {
       status: "approval-pending";
@@ -297,6 +310,30 @@ function renderExecHostLabel(host: ExecHost) {
 
 function normalizeNotifyOutput(value: string) {
   return value.replace(/\s+/g, " ").trim();
+}
+
+type ToolOutputTruncation = {
+  text: string;
+  truncated: boolean;
+  originalChars: number;
+  keptChars: number;
+};
+
+function truncateToolResultForModel(raw: string, cap: number): ToolOutputTruncation {
+  const originalChars = raw.length;
+  if (cap <= 0 || originalChars <= cap) {
+    return { text: raw, truncated: false, originalChars, keptChars: originalChars };
+  }
+
+  // Head/tail so the model sees command context and terminal errors/summary.
+  const headChars = Math.max(0, Math.floor(cap * 0.4));
+  const tailChars = Math.max(0, cap - headChars);
+  const head = raw.slice(0, headChars).trimEnd();
+  const tail = raw.slice(Math.max(0, originalChars - tailChars)).trimStart();
+  const kept = `${head}\n...\n${tail}`.trim();
+  const note = `\n\n[TRUNCATED originalChars=${originalChars} keptChars=${kept.length} capChars=${cap}]`;
+  const text = kept + note;
+  return { text, truncated: true, originalChars, keptChars: text.length };
 }
 
 function normalizePathPrepend(entries?: string[]) {
@@ -851,6 +888,12 @@ export function createExecTool(
 
       const maxOutput = DEFAULT_MAX_OUTPUT;
       const pendingMaxOutput = DEFAULT_PENDING_MAX_OUTPUT;
+      const resultMaxChars = clampNumber(
+        defaults?.resultMaxChars,
+        DEFAULT_RESULT_MAX_OUTPUT,
+        1_000,
+        50_000,
+      );
       const warnings: string[] = [];
       const backgroundRequested = params.background === true;
       const yieldRequested = typeof params.yieldMs === "number";
@@ -1253,19 +1296,24 @@ export function createExecTool(
         const errorText = typeof payloadObj.error === "string" ? payloadObj.error : "";
         const success = typeof payloadObj.success === "boolean" ? payloadObj.success : false;
         const exitCode = typeof payloadObj.exitCode === "number" ? payloadObj.exitCode : null;
+        const rawOutput = [stdout, stderr, errorText].filter(Boolean).join("\n");
+        const truncated = truncateToolResultForModel(rawOutput, resultMaxChars);
         return {
           content: [
             {
               type: "text",
-              text: stdout || stderr || errorText || "",
+              text: truncated.text,
             },
           ],
           details: {
             status: success ? "completed" : "failed",
             exitCode,
             durationMs: Date.now() - startedAt,
-            aggregated: [stdout, stderr, errorText].filter(Boolean).join("\n"),
+            aggregated: truncated.text,
             cwd: workdir,
+            truncated: truncated.truncated,
+            originalChars: truncated.originalChars,
+            keptChars: truncated.keptChars,
           } satisfies ExecToolDetails,
         };
       }
@@ -1597,19 +1645,25 @@ export function createExecTool(
               reject(new Error(outcome.reason ?? "Command failed."));
               return;
             }
+            const rawOutput = outcome.aggregated || "";
+            const truncated = truncateToolResultForModel(rawOutput, resultMaxChars);
+            const displayText = truncated.text || "(no output)";
             resolve({
               content: [
                 {
                   type: "text",
-                  text: `${getWarningText()}${outcome.aggregated || "(no output)"}`,
+                  text: `${getWarningText()}${displayText}`,
                 },
               ],
               details: {
                 status: "completed",
                 exitCode: outcome.exitCode ?? 0,
                 durationMs: outcome.durationMs,
-                aggregated: outcome.aggregated,
+                aggregated: truncated.text,
                 cwd: run.session.cwd,
+                truncated: truncated.truncated,
+                originalChars: truncated.originalChars,
+                keptChars: truncated.keptChars,
               },
             });
           })
