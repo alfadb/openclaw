@@ -29,6 +29,7 @@ import { enqueueSystemEvent } from "../infra/system-events.js";
 import { logInfo, logWarn } from "../logger.js";
 import { formatSpawnError, spawnWithFallback } from "../process/spawn-utils.js";
 import { parseAgentSessionKey, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import { clampNumber } from "../utils.js";
 import {
   type ProcessSession,
   type SessionStdin,
