@@ -278,15 +278,24 @@ function resolvePerplexityModel(perplexity?: PerplexityConfig): string {
 }
 
 function resolveGrokConfig(search?: WebSearchConfig): GrokConfig {
-  if (!search || typeof search !== "object") return {};
+  if (!search || typeof search !== "object") {
+    return {};
+  }
+
   const grok = "grok" in search ? search.grok : undefined;
-  if (!grok || typeof grok !== "object") return {};
+  if (!grok || typeof grok !== "object") {
+    return {};
+  }
+
   return grok as GrokConfig;
 }
 
 function resolveGrokApiKey(grok?: GrokConfig): string | undefined {
   const fromConfig = normalizeApiKey(grok?.apiKey);
-  if (fromConfig) return fromConfig;
+  if (fromConfig) {
+    return fromConfig;
+  }
+
   const fromEnv = normalizeApiKey(process.env.XAI_API_KEY);
   return fromEnv || undefined;
 }
@@ -469,15 +478,23 @@ async function runWebSearch(params: {
   grokModel?: string;
   grokInlineCitations?: boolean;
 }): Promise<Record<string, unknown>> {
-  const cacheKey = normalizeCacheKey(
-    params.provider === "brave"
-      ? `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}`
-      : params.provider === "perplexity"
-        ? `${params.provider}:${params.query}:${params.perplexityBaseUrl ?? DEFAULT_PERPLEXITY_BASE_URL}:${params.perplexityModel ?? DEFAULT_PERPLEXITY_MODEL}`
-        : params.provider === "grok"
-          ? `${params.provider}:${params.query}:${params.grokModel ?? DEFAULT_GROK_MODEL}:${params.grokInlineCitations ?? false}`
-          : `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}`,
-  );
+  let rawCacheKey: string;
+  switch (params.provider) {
+    case "brave":
+      rawCacheKey = `${params.provider}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}:${params.freshness || "default"}`;
+      break;
+    case "perplexity":
+      rawCacheKey = `${params.provider}:${params.query}:${params.perplexityBaseUrl ?? DEFAULT_PERPLEXITY_BASE_URL}:${params.perplexityModel ?? DEFAULT_PERPLEXITY_MODEL}`;
+      break;
+    case "grok":
+      rawCacheKey = `${params.provider}:${params.query}:${params.grokModel ?? DEFAULT_GROK_MODEL}:${params.grokInlineCitations ?? false}`;
+      break;
+    default:
+      rawCacheKey = `${String(params.provider)}:${params.query}:${params.count}:${params.country || "default"}:${params.search_lang || "default"}:${params.ui_lang || "default"}`;
+      break;
+  }
+
+  const cacheKey = normalizeCacheKey(rawCacheKey);
   const cached = readCache(SEARCH_CACHE, cacheKey);
   if (cached) {
     return { ...cached.value, cached: true };
