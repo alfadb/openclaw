@@ -268,6 +268,8 @@ export type ExecToolDetails =
       truncated?: boolean;
       originalChars?: number;
       keptChars?: number;
+      /** Human-readable failure reason (only meaningful when status=failed). */
+      error?: string;
     }
   | {
       status: "approval-pending";
@@ -1590,7 +1592,7 @@ export function createExecTool(
         signal.addEventListener("abort", onAbortSignal, { once: true });
       }
 
-      return new Promise<AgentToolResult<ExecToolDetails>>((resolve, reject) => {
+      return new Promise<AgentToolResult<ExecToolDetails>>((resolve) => {
         const resolveRunning = () =>
           resolve({
             content: [
@@ -1646,13 +1648,36 @@ export function createExecTool(
             if (yielded || run.session.backgrounded) {
               return;
             }
+            const outputText = outcome.aggregated || "";
+            const displayText = outputText || "(no output)";
+
             if (outcome.status === "failed") {
-              reject(new Error(outcome.reason ?? "Command failed."));
+              const exitLabel = outcome.timedOut
+                ? "timeout"
+                : `exit code ${outcome.exitCode ?? "?"}`;
+              const reason = outcome.reason ?? "Command failed.";
+              resolve({
+                content: [
+                  {
+                    type: "text",
+                    text:
+                      `${getWarningText()}❌ Command failed (${exitLabel}).\n` +
+                      `${reason}\n\n` +
+                      `${displayText}`,
+                  },
+                ],
+                details: {
+                  status: "failed",
+                  exitCode: outcome.exitCode,
+                  durationMs: outcome.durationMs,
+                  aggregated: outputText,
+                  cwd: run.session.cwd,
+                  error: reason,
+                },
+              });
               return;
             }
-            const rawOutput = outcome.aggregated || "";
-            const truncated = truncateToolResultForModel(rawOutput, resultMaxChars);
-            const displayText = truncated.text || "(no output)";
+
             resolve({
               content: [
                 {
@@ -1664,7 +1689,7 @@ export function createExecTool(
                 status: "completed",
                 exitCode: outcome.exitCode ?? 0,
                 durationMs: outcome.durationMs,
-                aggregated: truncated.text,
+                aggregated: outputText,
                 cwd: run.session.cwd,
                 truncated: truncated.truncated,
                 originalChars: truncated.originalChars,
@@ -1679,7 +1704,23 @@ export function createExecTool(
             if (yielded || run.session.backgrounded) {
               return;
             }
-            reject(err as Error);
+            const msg = err instanceof Error ? err.message : String(err);
+            resolve({
+              content: [
+                {
+                  type: "text",
+                  text: `${getWarningText()}❌ Exec error: ${msg}`,
+                },
+              ],
+              details: {
+                status: "failed",
+                exitCode: null,
+                durationMs: Date.now() - run.startedAt,
+                aggregated: "",
+                cwd: run.session.cwd,
+                error: msg,
+              },
+            });
           });
       });
     },
