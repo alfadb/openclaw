@@ -105,6 +105,37 @@ describe("initSessionState thread forking", () => {
   });
 });
 
+describe("initSessionState unhealthy circuit breaker", () => {
+  it("auto-resets session when unhealthyUntil is in the future", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-unhealthy-reset-"));
+    const storePath = path.join(root, "sessions.json");
+    const sessionKey = "agent:main:feishu:dm:u1";
+
+    await saveSessionStore(storePath, {
+      [sessionKey]: {
+        sessionId: "old-session",
+        updatedAt: Date.now(),
+        unhealthyUntil: Date.now() + 60_000,
+        unhealthyReason: "context_overflow",
+        overflowErrorStreak: 2,
+        overflowErrorAt: Date.now(),
+      },
+    });
+
+    const cfg = { session: { store: storePath } } as OpenClawConfig;
+    const result = await initSessionState({
+      ctx: { RawBody: "继续", SessionKey: sessionKey },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.sessionEntry.sessionId).not.toBe("old-session");
+    expect(result.sessionEntry.recoveredFromUnhealthy).toBe(true);
+    expect(result.sessionEntry.recoveredFromUnhealthyReason).toBe("context_overflow");
+  });
+});
+
 describe("initSessionState RawBody", () => {
   it("triggerBodyNormalized correctly extracts commands when Body contains context but RawBody is clean", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-rawbody-"));
