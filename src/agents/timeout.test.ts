@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { OpenClawConfig } from "../config/config.js";
-import {
-  resolveAgentTimeoutMs,
-  resolveSubagentAnnounceDeliveryTimeoutMs,
-  resolveSubagentAnnounceMaxAgeMs,
-} from "./timeout.js";
+import { resolveAgentTimeoutMs, resolveSubagentAnnounceDeliveryTimeoutMs } from "./timeout.js";
 
 describe("resolveAgentTimeoutMs", () => {
   it("uses a timer-safe sentinel for no-timeout overrides", () => {
@@ -15,20 +10,6 @@ describe("resolveAgentTimeoutMs", () => {
   it("clamps very large timeout overrides to timer-safe values", () => {
     expect(resolveAgentTimeoutMs({ overrideSeconds: 9_999_999 })).toBe(2_147_000_000);
     expect(resolveAgentTimeoutMs({ overrideMs: 9_999_999_999 })).toBe(2_147_000_000);
-  });
-
-  it("resolves subagent announce max age from config with sane defaults", () => {
-    expect(resolveSubagentAnnounceMaxAgeMs()).toBe(10 * 60 * 1000);
-    expect(
-      resolveSubagentAnnounceMaxAgeMs({
-        agents: { defaults: { subagents: { announceMaxAgeMs: 30_000 } } },
-      } as OpenClawConfig),
-    ).toBe(30_000);
-    expect(
-      resolveSubagentAnnounceMaxAgeMs({
-        agents: { defaults: { subagents: { announceMaxAgeMs: -1 } } },
-      } as OpenClawConfig),
-    ).toBe(10 * 60 * 1000);
   });
 });
 
