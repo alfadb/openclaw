@@ -1649,7 +1649,8 @@ export function createExecTool(
               return;
             }
             const outputText = outcome.aggregated || "";
-            const displayText = outputText || "(no output)";
+            const truncated = truncateToolResultForModel(outputText, resultMaxChars);
+            const displayText = truncated.text || "(no output)";
 
             if (outcome.status === "failed") {
               const exitLabel = outcome.timedOut
@@ -1689,7 +1690,7 @@ export function createExecTool(
                 status: "completed",
                 exitCode: outcome.exitCode ?? 0,
                 durationMs: outcome.durationMs,
-                aggregated: outputText,
+                aggregated: truncated.text,
                 cwd: run.session.cwd,
                 truncated: truncated.truncated,
                 originalChars: truncated.originalChars,
