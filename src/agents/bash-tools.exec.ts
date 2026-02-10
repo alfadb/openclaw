@@ -1671,8 +1671,11 @@ export function createExecTool(
                   status: "failed",
                   exitCode: outcome.exitCode,
                   durationMs: outcome.durationMs,
-                  aggregated: outputText,
+                  aggregated: truncated.text,
                   cwd: run.session.cwd,
+                  truncated: truncated.truncated,
+                  originalChars: truncated.originalChars,
+                  keptChars: truncated.keptChars,
                   error: reason,
                 },
               });
