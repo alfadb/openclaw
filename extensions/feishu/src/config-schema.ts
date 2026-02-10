@@ -53,6 +53,20 @@ const ChannelHeartbeatVisibilitySchema = z
   .strict()
   .optional();
 
+const StaleDropConfigSchema = z
+  .object({
+    /** Enable stale/out-of-order message dropping based on message.create_time. */
+    enabled: z.boolean().optional(),
+    /** When true, reply with a visible notice for stale messages; when false, silently drop. */
+    reply: z.boolean().optional(),
+    /** Allowed clock/ordering skew before considering a message stale (ms). */
+    skewWindowMs: z.number().int().min(0).optional(),
+    /** Max recent message IDs to persist per chat for deduplication. */
+    recentIdsLimit: z.number().int().positive().optional(),
+  })
+  .strict()
+  .optional();
+
 /**
  * Dynamic agent creation configuration.
  * When enabled, a new agent is created for each unique DM user.
@@ -178,6 +192,8 @@ export const FeishuConfigSchema = z
     heartbeat: ChannelHeartbeatVisibilitySchema,
     renderMode: RenderModeSchema, // raw = plain text (default), card = interactive card with markdown
     tools: FeishuToolsConfigSchema,
+    /** Stale/out-of-order message handling (best-effort). */
+    staleDrop: StaleDropConfigSchema,
     // Dynamic agent creation for DM users
     dynamicAgentCreation: DynamicAgentCreationSchema,
     // Multi-account configuration

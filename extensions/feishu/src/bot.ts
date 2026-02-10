@@ -41,6 +41,33 @@ const FEISHU_INBOUND_STATE_DIR = "feishu/inbound";
 const FEISHU_RECENT_IDS_LIMIT = 250;
 const FEISHU_STALE_SKEW_WINDOW_MS = 5_000;
 
+function resolveStaleDropConfig(feishuCfg: any): {
+  enabled: boolean;
+  reply: boolean;
+  skewWindowMs: number;
+  recentIdsLimit: number;
+} {
+  const cfg = (feishuCfg?.staleDrop ?? {}) as {
+    enabled?: boolean;
+    reply?: boolean;
+    skewWindowMs?: number;
+    recentIdsLimit?: number;
+  };
+
+  return {
+    enabled: cfg.enabled !== false,
+    reply: cfg.reply !== false,
+    skewWindowMs:
+      typeof cfg.skewWindowMs === "number" && Number.isFinite(cfg.skewWindowMs)
+        ? Math.max(0, Math.floor(cfg.skewWindowMs))
+        : FEISHU_STALE_SKEW_WINDOW_MS,
+    recentIdsLimit:
+      typeof cfg.recentIdsLimit === "number" && Number.isFinite(cfg.recentIdsLimit)
+        ? Math.max(1, Math.floor(cfg.recentIdsLimit))
+        : FEISHU_RECENT_IDS_LIMIT,
+  };
+}
+
 type FeishuInboundState = {
   lastProcessedSentAtMs?: number;
   recentMessageIds?: string[];
@@ -599,72 +626,81 @@ export async function handleFeishuMessage(params: {
   let ctx = parseFeishuMessageEvent(event, botOpenId);
   const isGroup = ctx.chatType === "group";
 
+  const staleCfg = resolveStaleDropConfig(feishuCfg);
+
   // Persistent dedup + stale drop (best-effort).
   // If Feishu redelivers old messages hours later, do not pass them to the model.
-  try {
-    const stateDir = getFeishuRuntime().state.resolveStateDir();
-    const { filePath, state } = await readFeishuInboundState({
-      stateDir,
-      accountId: account.accountId,
-      chatId: ctx.chatId,
-    });
+  if (staleCfg.enabled) {
+    try {
+      const stateDir = getFeishuRuntime().state.resolveStateDir();
+      const { filePath, state } = await readFeishuInboundState({
+        stateDir,
+        accountId: account.accountId,
+        chatId: ctx.chatId,
+      });
 
-    const recent = Array.isArray(state.recentMessageIds) ? state.recentMessageIds : [];
-    if (recent.includes(ctx.messageId)) {
-      log(`feishu[${account.accountId}]: skipping duplicate message ${ctx.messageId} (persistent)`);
-      return;
-    }
-
-    const sentAt = ctx.createTimeMs;
-    const last = state.lastProcessedSentAtMs;
-    if (typeof sentAt === "number" && Number.isFinite(sentAt) && typeof last === "number") {
-      if (sentAt < last - FEISHU_STALE_SKEW_WINDOW_MS) {
-        const staleText =
-          `过期消息，被忽略。\n` +
-          `sentAt=${sentAt} (${new Date(sentAt).toISOString()})\n` +
-          `lastProcessedSentAt=${last} (${new Date(last).toISOString()})`;
-
-        // Reply directly, do not involve the model.
-        await sendMessageFeishu({
-          cfg,
-          // For replies, the message_id is the true anchor; `to` is just used for target validation.
-          to: isGroup ? ctx.chatId : ctx.senderOpenId,
-          replyToMessageId: ctx.messageId,
-          text: staleText,
-          accountId: account.accountId,
-        });
-
-        // Record as seen to prevent repeated stale deliveries.
-        recent.push(ctx.messageId);
-        const nextRecent = recent.slice(-FEISHU_RECENT_IDS_LIMIT);
-        await writeFeishuInboundState({
-          filePath,
-          state: {
-            ...state,
-            recentMessageIds: nextRecent,
-            updatedAtMs: Date.now(),
-          },
-        });
+      const recent = Array.isArray(state.recentMessageIds) ? state.recentMessageIds : [];
+      if (recent.includes(ctx.messageId)) {
+        log(
+          `feishu[${account.accountId}]: skipping duplicate message ${ctx.messageId} (persistent)`,
+        );
         return;
       }
-    }
 
-    // Update watermark + recent IDs.
-    const nextLast =
-      typeof sentAt === "number" && Number.isFinite(sentAt) ? Math.max(last ?? 0, sentAt) : last;
-    recent.push(ctx.messageId);
-    const nextRecent = recent.slice(-FEISHU_RECENT_IDS_LIMIT);
-    await writeFeishuInboundState({
-      filePath,
-      state: {
-        lastProcessedSentAtMs: nextLast,
-        recentMessageIds: nextRecent,
-        updatedAtMs: Date.now(),
-      },
-    });
-  } catch (err) {
-    // Best-effort; never block message handling.
-    log(`feishu[${account.accountId}]: persistent dedup/stale check failed: ${String(err)}`);
+      const sentAt = ctx.createTimeMs;
+      const last = state.lastProcessedSentAtMs;
+      if (typeof sentAt === "number" && Number.isFinite(sentAt) && typeof last === "number") {
+        if (sentAt < last - staleCfg.skewWindowMs) {
+          const staleText =
+            `过期消息，被忽略。\n` +
+            `sentAt=${sentAt} (${new Date(sentAt).toISOString()})\n` +
+            `lastProcessedSentAt=${last} (${new Date(last).toISOString()})\n` +
+            `reason=out_of_order_delivery`;
+
+          if (staleCfg.reply) {
+            // Reply directly, do not involve the model.
+            await sendMessageFeishu({
+              cfg,
+              // For replies, the message_id is the true anchor; `to` is just used for target validation.
+              to: isGroup ? ctx.chatId : ctx.senderOpenId,
+              replyToMessageId: ctx.messageId,
+              text: staleText,
+              accountId: account.accountId,
+            });
+          }
+
+          // Record as seen to prevent repeated stale deliveries.
+          recent.push(ctx.messageId);
+          const nextRecent = recent.slice(-staleCfg.recentIdsLimit);
+          await writeFeishuInboundState({
+            filePath,
+            state: {
+              ...state,
+              recentMessageIds: nextRecent,
+              updatedAtMs: Date.now(),
+            },
+          });
+          return;
+        }
+      }
+
+      // Update watermark + recent IDs.
+      const nextLast =
+        typeof sentAt === "number" && Number.isFinite(sentAt) ? Math.max(last ?? 0, sentAt) : last;
+      recent.push(ctx.messageId);
+      const nextRecent = recent.slice(-staleCfg.recentIdsLimit);
+      await writeFeishuInboundState({
+        filePath,
+        state: {
+          lastProcessedSentAtMs: nextLast,
+          recentMessageIds: nextRecent,
+          updatedAtMs: Date.now(),
+        },
+      });
+    } catch (err) {
+      // Best-effort; never block message handling.
+      log(`feishu[${account.accountId}]: persistent dedup/stale check failed: ${String(err)}`);
+    }
   }
 
   // Resolve sender display name (best-effort) so the agent can attribute messages correctly.
