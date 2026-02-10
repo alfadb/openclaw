@@ -100,6 +100,16 @@ export const feishuPlugin: ChannelPlugin<ResolvedFeishuAccount> = {
         chunkMode: { type: "string", enum: ["length", "newline"] },
         mediaMaxMb: { type: "number", minimum: 0 },
         renderMode: { type: "string", enum: ["auto", "raw", "card"] },
+        staleDrop: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            enabled: { type: "boolean" },
+            reply: { type: "boolean" },
+            skewWindowMs: { type: "integer", minimum: 0 },
+            recentIdsLimit: { type: "integer", minimum: 1 },
+          },
+        },
         accounts: {
           type: "object",
           additionalProperties: {
