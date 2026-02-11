@@ -2,6 +2,41 @@ import type { ClawdbotConfig } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isFeishuReactionBusyError(err: unknown): boolean {
+  const anyErr = err as any;
+
+  // Lark/Feishu OpenAPI can return either a response object (code/msg)
+  // or throw an AxiosError with response.data containing { code, msg }.
+  const code = anyErr?.response?.data?.code ?? anyErr?.code;
+  const msg = String(anyErr?.response?.data?.msg ?? anyErr?.msg ?? "");
+
+  // 231015: Act on reaction failed, repeated request is processing.
+  return code === 231015 || msg.includes("repeated request is processing");
+}
+
+async function withReactionBusyRetry<T>(fn: () => Promise<T>): Promise<T> {
+  const delays = [150, 350, 800];
+  let lastErr: unknown;
+
+  for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (!isFeishuReactionBusyError(err) || attempt >= delays.length) {
+        throw err;
+      }
+      await sleep(delays[attempt]);
+    }
+  }
+
+  throw lastErr;
+}
+
 export type FeishuReaction = {
   reactionId: string;
   emojiType: string;
@@ -28,14 +63,16 @@ export async function addReactionFeishu(params: {
 
   const client = createFeishuClient(account);
 
-  const response = (await client.im.messageReaction.create({
-    path: { message_id: messageId },
-    data: {
-      reaction_type: {
-        emoji_type: emojiType,
+  const response = (await withReactionBusyRetry(() =>
+    client.im.messageReaction.create({
+      path: { message_id: messageId },
+      data: {
+        reaction_type: {
+          emoji_type: emojiType,
+        },
       },
-    },
-  })) as {
+    }),
+  )) as {
     code?: number;
     msg?: string;
     data?: { reaction_id?: string };
@@ -70,12 +107,14 @@ export async function removeReactionFeishu(params: {
 
   const client = createFeishuClient(account);
 
-  const response = (await client.im.messageReaction.delete({
-    path: {
-      message_id: messageId,
-      reaction_id: reactionId,
-    },
-  })) as { code?: number; msg?: string };
+  const response = (await withReactionBusyRetry(() =>
+    client.im.messageReaction.delete({
+      path: {
+        message_id: messageId,
+        reaction_id: reactionId,
+      },
+    }),
+  )) as { code?: number; msg?: string };
 
   if (response.code !== 0) {
     throw new Error(`Feishu remove reaction failed: ${response.msg || `code ${response.code}`}`);
