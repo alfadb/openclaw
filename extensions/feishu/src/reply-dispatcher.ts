@@ -72,6 +72,9 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       // Feishu typing is implemented as a message reaction, which should be added once
       // and left in place until stop/cleanup.
       if (typingState?.reactionId) {
+        params.runtime.log?.(
+          `feishu[${account.accountId}]: typing keepalive (reaction already active, skip add)`,
+        );
         return;
       }
 
