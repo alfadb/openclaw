@@ -76,6 +76,19 @@ export type SessionEntry = {
   compactionCount?: number;
   memoryFlushAt?: number;
   memoryFlushCompactionCount?: number;
+
+  /** Session marked temporarily unhealthy (e.g. repeated context overflow). */
+  unhealthyUntil?: number;
+  /** Short machine-friendly reason for unhealthy state. */
+  unhealthyReason?: string;
+  /** Consecutive overflow-like failures within a time window. */
+  overflowErrorStreak?: number;
+  /** Timestamp (ms) of last overflow-like failure used for streak accounting. */
+  overflowErrorAt?: number;
+
+  /** One-shot flag: this session was auto-reset due to unhealthy state; used to show a hint once. */
+  recoveredFromUnhealthy?: boolean;
+  recoveredFromUnhealthyReason?: string;
   cliSessionIds?: Record<string, string>;
   claudeCliSessionId?: string;
   label?: string;
