@@ -2057,8 +2057,10 @@ of `every`, keep `HEARTBEAT.md` tiny, and/or choose a cheaper `model`.
 
 - `backgroundMs`: time before auto-background (ms, default 10000)
 - `timeoutSec`: auto-kill after this runtime (seconds, default 1800)
+- `resultMaxChars`: max output chars included in tool results sent to the model (does not affect process log cache; default 20000)
 - `cleanupMs`: how long to keep finished sessions in memory (ms, default 1800000)
 - `notifyOnExit`: enqueue a system event + request heartbeat when backgrounded exec exits (default true)
+- `resultMaxChars`: max exec output chars included in tool results sent to the model (default 20000; hard clamp 1000–50000). This does **not** change `process log` in-memory aggregation caps.
 - `applyPatch.enabled`: enable experimental `apply_patch` (OpenAI/OpenAI Codex only; default false)
 - `applyPatch.allowModels`: optional allowlist of model ids (e.g. `gpt-5.2` or `openai/gpt-5.2`)
   Note: `applyPatch` is only under `tools.exec`.
