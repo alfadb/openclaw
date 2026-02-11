@@ -1,11 +1,12 @@
 import type { ClawdbotConfig } from "openclaw/plugin-sdk";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
-
 // Feishu emoji types for typing indicator
 // See: https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce
 // Full list: https://github.com/go-lark/lark/blob/main/emoji.go
-const TYPING_EMOJI = "Typing"; // Typing indicator emoji
+import { FeishuEmoji } from "./reactions.js";
+
+const TYPING_EMOJI = FeishuEmoji.TYPING; // Typing indicator emoji
 
 export type TypingIndicatorState = {
   messageId: string;

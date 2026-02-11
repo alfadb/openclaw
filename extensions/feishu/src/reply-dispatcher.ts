@@ -38,6 +38,11 @@ export type CreateFeishuReplyDispatcherParams = {
   mentionTargets?: MentionTarget[];
   /** Account ID for multi-account support */
   accountId?: string;
+  /** Optional status callbacks (non-message UI indicators) */
+  statusCallbacks?: {
+    onReplyStart?: () => Promise<void> | void;
+    onIdle?: () => Promise<void> | void;
+  };
 };
 
 export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherParams) {
@@ -58,6 +63,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
 
   const typingCallbacks = createTypingCallbacks({
     start: async () => {
+      await params.statusCallbacks?.onReplyStart?.();
       if (!replyToMessageId) {
         return;
       }
@@ -164,8 +170,13 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
           `feishu[${account.accountId}] ${info.kind} reply failed: ${String(err)}`,
         );
         typingCallbacks.onIdle?.();
+        // Best-effort: ensure status callback sees the failure/idle transition.
+        void params.statusCallbacks?.onIdle?.();
       },
-      onIdle: typingCallbacks.onIdle,
+      onIdle: () => {
+        typingCallbacks.onIdle?.();
+        void params.statusCallbacks?.onIdle?.();
+      },
     });
 
   return {
