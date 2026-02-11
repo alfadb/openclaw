@@ -245,7 +245,7 @@ describe("openclaw-tools: subagents", () => {
           deliver?: boolean;
         }
       | undefined;
-    expect(second?.sessionKey).toBe("discord:group:req");
+    expect(second?.sessionKey).toBe("agent:main:discord:group:req");
     expect(second?.deliver).toBe(true);
     expect(second?.message).toContain("subagent task");
 
