@@ -32,7 +32,7 @@ import {
   resolveFeishuAllowlistMatch,
   isFeishuGroupAllowed,
 } from "./policy.js";
-import { FeishuEmoji } from "./reactions.js";
+import { FeishuEmoji, listReactionsFeishu, removeReactionFeishu } from "./reactions.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
@@ -1420,6 +1420,36 @@ export async function handleFeishuMessage(params: {
   }
 }
 
+async function cleanupTypingReactionsForMessage(params: {
+  cfg: ClawdbotConfig;
+  accountId: string;
+  messageId: string;
+  runtime?: RuntimeEnv;
+}): Promise<void> {
+  const { cfg, accountId, messageId, runtime } = params;
+  try {
+    const reactions = await listReactionsFeishu({
+      cfg,
+      accountId,
+      messageId,
+      emojiType: FeishuEmoji.TYPING,
+    });
+
+    for (const r of reactions) {
+      // Only remove app-added typing indicators.
+      if (r.operatorType !== "app") continue;
+      if (!r.reactionId) continue;
+      await removeReactionFeishu({ cfg, accountId, messageId, reactionId: r.reactionId });
+    }
+
+    if (reactions.length > 0) {
+      runtime?.log?.(`feishu[${accountId}]: cleaned up ${reactions.length} typing reactions`);
+    }
+  } catch (err) {
+    runtime?.log?.(`feishu[${accountId}]: typing cleanup failed: ${String(err)}`);
+  }
+}
+
 export async function reconcileFeishuInFlight(params: {
   cfg: ClawdbotConfig;
   accountId: string;
@@ -1445,6 +1475,15 @@ export async function reconcileFeishuInFlight(params: {
     if (now - task.updatedAtMs > maxAgeMs) continue;
 
     try {
+      // If we were mid-reply when the gateway restarted, the typing indicator reaction can be left behind.
+      // Clean it up best-effort so the anchor message does not stay in "typing" forever.
+      await cleanupTypingReactionsForMessage({
+        cfg,
+        accountId,
+        messageId: task.messageId,
+        runtime,
+      });
+
       // Mark interrupted (⚠️)
       const reaction = await replaceStatusReaction({
         cfg,
