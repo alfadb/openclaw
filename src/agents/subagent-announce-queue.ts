@@ -20,6 +20,8 @@ export type AnnounceQueueItem = {
   sessionKey: string;
   origin?: DeliveryContext;
   originKey?: string;
+  /** High priority items bypass stale-age dropping. */
+  highPriority?: boolean;
 };
 
 export type AnnounceQueueSettings = {
@@ -27,6 +29,7 @@ export type AnnounceQueueSettings = {
   debounceMs?: number;
   cap?: number;
   dropPolicy?: QueueDropPolicy;
+  maxAgeMs?: number;
 };
 
 type AnnounceQueueState = {
@@ -40,9 +43,20 @@ type AnnounceQueueState = {
   droppedCount: number;
   summaryLines: string[];
   send: (item: AnnounceQueueItem) => Promise<void>;
+  maxAgeMs: number;
 };
 
 const ANNOUNCE_QUEUES = new Map<string, AnnounceQueueState>();
+
+function isStaleItem(queue: AnnounceQueueState, item: AnnounceQueueItem, now = Date.now()) {
+  if (item.highPriority) {
+    return false;
+  }
+  if (!Number.isFinite(queue.maxAgeMs) || queue.maxAgeMs <= 0) {
+    return false;
+  }
+  return now - item.enqueuedAt > queue.maxAgeMs;
+}
 
 function getAnnounceQueue(
   key: string,
@@ -61,6 +75,10 @@ function getAnnounceQueue(
         ? Math.floor(settings.cap)
         : existing.cap;
     existing.dropPolicy = settings.dropPolicy ?? existing.dropPolicy;
+    existing.maxAgeMs =
+      typeof settings.maxAgeMs === "number" && Number.isFinite(settings.maxAgeMs)
+        ? Math.max(0, Math.floor(settings.maxAgeMs))
+        : existing.maxAgeMs;
     existing.send = send;
     return existing;
   }
@@ -75,9 +93,35 @@ function getAnnounceQueue(
     droppedCount: 0,
     summaryLines: [],
     send,
+    maxAgeMs:
+      typeof settings.maxAgeMs === "number" && Number.isFinite(settings.maxAgeMs)
+        ? Math.max(0, Math.floor(settings.maxAgeMs))
+        : 10 * 60 * 1000,
   };
   ANNOUNCE_QUEUES.set(key, created);
   return created;
+}
+
+async function sendIfFresh(queue: AnnounceQueueState, key: string, item: AnnounceQueueItem) {
+  const now = Date.now();
+  const queueAgeMs = Math.max(0, now - item.enqueuedAt);
+  if (isStaleItem(queue, item, now)) {
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] stale_message_dropped key=${key} queue_age_ms=${queueAgeMs} max_age_ms=${queue.maxAgeMs}`,
+    );
+    return;
+  }
+  try {
+    await queue.send(item);
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] queue_delivery key=${key} queue_age_ms=${queueAgeMs}`,
+    );
+  } catch (err) {
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] queue_delivery_failed key=${key} queue_age_ms=${queueAgeMs} error=${encodeURIComponent(String(err))}`,
+    );
+    throw err;
+  }
 }
 
 function scheduleAnnounceDrain(key: string) {
@@ -97,7 +141,7 @@ function scheduleAnnounceDrain(key: string) {
             if (!next) {
               break;
             }
-            await queue.send(next);
+            await sendIfFresh(queue, key, next);
             continue;
           }
           const isCrossChannel = hasCrossChannelItems(queue.items, (item) => {
@@ -115,22 +159,33 @@ function scheduleAnnounceDrain(key: string) {
             if (!next) {
               break;
             }
-            await queue.send(next);
+            await sendIfFresh(queue, key, next);
             continue;
           }
           const items = queue.items.splice(0, queue.items.length);
+          const now = Date.now();
+          const freshItems = items.filter((item) => {
+            const stale = isStaleItem(queue, item, now);
+            if (stale) {
+              const queueAgeMs = Math.max(0, now - item.enqueuedAt);
+              defaultRuntime.log?.(
+                `[subagent_announce_metric] stale_message_dropped key=${key} queue_age_ms=${queueAgeMs} max_age_ms=${queue.maxAgeMs}`,
+              );
+            }
+            return !stale;
+          });
           const summary = buildQueueSummaryPrompt({ state: queue, noun: "announce" });
           const prompt = buildCollectPrompt({
             title: "[Queued announce messages while agent was busy]",
-            items,
+            items: freshItems,
             summary,
             renderItem: (item, idx) => `---\nQueued #${idx + 1}\n${item.prompt}`.trim(),
           });
-          const last = items.at(-1);
+          const last = freshItems.at(-1);
           if (!last) {
-            break;
+            continue;
           }
-          await queue.send({ ...last, prompt });
+          await sendIfFresh(queue, key, { ...last, prompt });
           continue;
         }
 
@@ -140,7 +195,7 @@ function scheduleAnnounceDrain(key: string) {
           if (!next) {
             break;
           }
-          await queue.send({ ...next, prompt: summaryPrompt });
+          await sendIfFresh(queue, key, { ...next, prompt: summaryPrompt });
           continue;
         }
 
@@ -148,7 +203,7 @@ function scheduleAnnounceDrain(key: string) {
         if (!next) {
           break;
         }
-        await queue.send(next);
+        await sendIfFresh(queue, key, next);
       }
     } catch (err) {
       defaultRuntime.error?.(`announce queue drain failed for ${key}: ${String(err)}`);
