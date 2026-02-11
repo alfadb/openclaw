@@ -160,7 +160,7 @@ export const FeishuEmoji = {
   GLANCE: "GLANCE", // 👀 received
   ON_IT: "OnIt",
   ONE_SECOND: "OneSecond", // ⏳ queued
-  HAMMER: "HAMMER", // ⚙️ substitute (working)
+  HAMMER: "HAMMER", // 🔨 (working) — appears as hammer/knocking in Feishu UI; prefer ON_IT for working status
   ALARM: "Alarm", // 🕒 waiting
   ERROR: "ERROR", // ⚠️ failed
   TYPING: "Typing",

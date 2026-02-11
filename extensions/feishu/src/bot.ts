@@ -1286,7 +1286,7 @@ export async function handleFeishuMessage(params: {
             messageId: anchorMessageId,
             taskId: inFlightTaskId,
             nextState: "working",
-            nextEmojiType: FeishuEmoji.HAMMER,
+            nextEmojiType: FeishuEmoji.ON_IT,
           });
         },
         onIdle: async () => {
