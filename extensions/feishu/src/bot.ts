@@ -24,17 +24,6 @@ import {
   writeFeishuInFlightStore,
   type FeishuInFlightTask,
 } from "./inflight-store.js";
-import {
-  clampOriginalText,
-  createInFlightId,
-  getLastInterruptibleTask,
-  readFeishuInFlightStore,
-  removeTask,
-  setLastInterruptible,
-  upsertTask,
-  writeFeishuInFlightStore,
-  type FeishuInFlightTask,
-} from "./inflight-store.js";
 import { downloadImageFeishu, downloadMessageResourceFeishu } from "./media.js";
 import { extractMentionTargets, extractMessageBody, isMentionForwardRequest } from "./mention.js";
 import {
