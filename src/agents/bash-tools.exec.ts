@@ -1664,7 +1664,7 @@ export function createExecTool(
                     text:
                       `${getWarningText()}❌ Command failed (${exitLabel}).\n` +
                       `${reason}\n\n` +
-                      `${displayText}`,
+                      displayText,
                   },
                 ],
                 details: {

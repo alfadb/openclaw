@@ -47,7 +47,7 @@ import { FeishuEmoji } from "./reactions.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
-import { createFeishuStatusController } from "./status-protocol.js";
+// status-protocol helpers are implemented inline in this file (setFeishuStatus)
 import { replaceStatusReaction } from "./status-reaction.js";
 
 // --- Message deduplication ---
@@ -66,11 +66,7 @@ const FEISHU_INBOUND_STATE_DIR = "feishu/inbound";
 const FEISHU_RECENT_IDS_LIMIT = 250;
 const FEISHU_STALE_SKEW_WINDOW_MS = 5_000;
 
-function isContinueCommand(text: string | undefined): boolean {
-  const t = (text ?? "").trim().toLowerCase();
-  return t === "继续" || t === "继续一下" || t === "continue" || t === "resume";
-}
-
+// (deprecated) use isContinueMessage() below
 function resolveStaleDropConfig(feishuCfg: any): {
   enabled: boolean;
   reply: boolean;
@@ -1301,7 +1297,7 @@ export async function handleFeishuMessage(params: {
             messageId: anchorMessageId,
             taskId: inFlightTaskId,
             nextState: "working",
-            nextEmojiType: FeishuEmoji.ON_IT,
+            nextEmojiType: FeishuEmoji.HAMMER,
           });
         },
         onIdle: async () => {
@@ -1328,7 +1324,7 @@ export async function handleFeishuMessage(params: {
               messageId: anchorMessageId,
               taskId: inFlightTaskId,
               nextState: "done",
-              nextEmojiType: FeishuEmoji.CHECK,
+              nextEmojiType: FeishuEmoji.DONE,
             });
             const { filePath: fp2, store: st2 } = await readFeishuInFlightStore({
               stateDir,

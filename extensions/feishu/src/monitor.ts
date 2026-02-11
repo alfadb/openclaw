@@ -117,13 +117,7 @@ async function monitorSingleAccount(params: MonitorAccountParams): Promise<void>
   botOpenIds.set(accountId, botOpenId ?? "");
   log(`feishu[${accountId}]: bot open_id resolved: ${botOpenId ?? "unknown"}`);
 
-  // Startup reconciliation: compensate any in-flight tasks interrupted by shutdown/restart.
-  try {
-    const { reconcileFeishuInFlightOnStartup } = await import("./startup-reconcile.js");
-    await reconcileFeishuInFlightOnStartup({ cfg, runtime, accountId });
-  } catch (err) {
-    log(`feishu[${accountId}]: startup reconcile skipped/failed: ${String(err)}`);
-  }
+  // Startup reconciliation is handled by reconcileFeishuInFlight() below.
 
   // Startup reconciliation: if we were interrupted mid-task, mark the original message and explain once.
   try {
