@@ -67,8 +67,18 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       if (!replyToMessageId) {
         return;
       }
+
+      // The core typing controller may call onReplyStart periodically (keep-alive).
+      // Feishu typing is implemented as a message reaction, which should be added once
+      // and left in place until stop/cleanup.
+      if (typingState?.reactionId) {
+        return;
+      }
+
       typingState = await addTypingIndicator({ cfg, messageId: replyToMessageId, accountId });
-      params.runtime.log?.(`feishu[${account.accountId}]: added typing indicator reaction`);
+      if (typingState.reactionId) {
+        params.runtime.log?.(`feishu[${account.accountId}]: added typing indicator reaction`);
+      }
     },
     stop: async () => {
       if (!typingState) {
