@@ -16,6 +16,10 @@ export async function replaceStatusReaction(params: {
 }): Promise<StatusReactionState> {
   const { cfg, messageId, nextEmojiType, prev, accountId, runtime } = params;
 
+  // Feishu reaction create can be effectively idempotent for the same emoji on the same message.
+  // In that case, the returned reaction_id may equal the previous one.
+  // Never remove the "previous" reaction if it is actually the same as the newly created one,
+  // otherwise we would accidentally clear the final status reaction.
   const { reactionId } = await addReactionFeishu({
     cfg,
     messageId,
@@ -23,7 +27,7 @@ export async function replaceStatusReaction(params: {
     accountId,
   });
 
-  if (prev?.reactionId) {
+  if (prev?.reactionId && prev.reactionId !== reactionId) {
     try {
       await removeReactionFeishu({
         cfg,
