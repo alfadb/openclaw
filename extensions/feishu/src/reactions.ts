@@ -149,12 +149,22 @@ export const FeishuEmoji = {
   OK: "OK",
   FIST: "FIST",
   PRAY: "PRAY",
-  FIRE: "FIRE",
+  FIRE: "Fire",
   PARTY: "PARTY",
-  CHECK: "CHECK",
-  CROSS: "CROSS",
+  CHECK: "CheckMark",
+  CROSS: "CrossMark",
   QUESTION: "QUESTION",
   EXCLAMATION: "EXCLAMATION",
+
+  // Extra emoji types used by OpenClaw Feishu status protocol
+  GLANCE: "GLANCE", // 👀 received
+  ON_IT: "OnIt",
+  ONE_SECOND: "OneSecond", // ⏳ queued
+  HAMMER: "HAMMER", // ⚙️ substitute (working)
+  ALARM: "Alarm", // 🕒 waiting
+  ERROR: "ERROR", // ⚠️ failed
+  TYPING: "Typing",
+  DONE: "DONE", // ✅ done
 } as const;
 
 export type FeishuEmojiType = (typeof FeishuEmoji)[keyof typeof FeishuEmoji];

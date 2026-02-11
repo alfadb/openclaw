@@ -13,6 +13,28 @@ import type { DynamicAgentCreationConfig } from "./types.js";
 import { resolveFeishuAccount } from "./accounts.js";
 import { createFeishuClient } from "./client.js";
 import { maybeCreateDynamicAgent } from "./dynamic-agent.js";
+import {
+  clampOriginalText,
+  createInFlightId,
+  getLastInterruptibleTask,
+  readFeishuInFlightStore,
+  removeTask,
+  setLastInterruptible,
+  upsertTask,
+  writeFeishuInFlightStore,
+  type FeishuInFlightTask,
+} from "./inflight-store.js";
+import {
+  clampOriginalText,
+  createInFlightId,
+  getLastInterruptibleTask,
+  readFeishuInFlightStore,
+  removeTask,
+  setLastInterruptible,
+  upsertTask,
+  writeFeishuInFlightStore,
+  type FeishuInFlightTask,
+} from "./inflight-store.js";
 import { downloadImageFeishu, downloadMessageResourceFeishu } from "./media.js";
 import { extractMentionTargets, extractMessageBody, isMentionForwardRequest } from "./mention.js";
 import {
@@ -21,9 +43,12 @@ import {
   resolveFeishuAllowlistMatch,
   isFeishuGroupAllowed,
 } from "./policy.js";
+import { FeishuEmoji } from "./reactions.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu, sendMessageFeishu } from "./send.js";
+import { createFeishuStatusController } from "./status-protocol.js";
+import { replaceStatusReaction } from "./status-reaction.js";
 
 // --- Message deduplication ---
 // Prevent duplicate processing when WebSocket reconnects or Feishu redelivers messages.
@@ -40,6 +65,11 @@ let lastCleanupTime = Date.now();
 const FEISHU_INBOUND_STATE_DIR = "feishu/inbound";
 const FEISHU_RECENT_IDS_LIMIT = 250;
 const FEISHU_STALE_SKEW_WINDOW_MS = 5_000;
+
+function isContinueCommand(text: string | undefined): boolean {
+  const t = (text ?? "").trim().toLowerCase();
+  return t === "继续" || t === "继续一下" || t === "continue" || t === "resume";
+}
 
 function resolveStaleDropConfig(feishuCfg: any): {
   enabled: boolean;
@@ -102,6 +132,92 @@ async function writeFeishuInboundState(params: {
   const tmp = `${filePath}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(state, null, 2) + "\n", "utf-8");
   await fs.rename(tmp, filePath);
+}
+
+const CONTINUE_PATTERNS = [/^继续\b/i, /^continue\b/i, /^resume\b/i];
+
+function isContinueMessage(text: string): boolean {
+  const t = (text ?? "").trim();
+  if (!t) return false;
+  return CONTINUE_PATTERNS.some((re) => re.test(t));
+}
+
+async function setFeishuStatus(params: {
+  cfg: ClawdbotConfig;
+  runtime?: RuntimeEnv;
+  stateDir: string;
+  accountId: string;
+  chatId: string;
+  chatType: "direct" | "group";
+  userOpenId?: string;
+  messageId: string;
+  taskId: string;
+  nextState: FeishuInFlightTask["state"];
+  nextEmojiType: string;
+  originalText?: string;
+  truncated?: boolean;
+}): Promise<void> {
+  const {
+    cfg,
+    runtime,
+    stateDir,
+    accountId,
+    chatId,
+    chatType,
+    userOpenId,
+    messageId,
+    taskId,
+    nextState,
+    nextEmojiType,
+    originalText,
+    truncated,
+  } = params;
+
+  const { filePath, store } = await readFeishuInFlightStore({ stateDir, accountId });
+  const now = Date.now();
+  const prev = store.tasks.find((t) => t.id === taskId);
+
+  let reaction = prev?.reaction;
+  try {
+    reaction = await replaceStatusReaction({
+      cfg,
+      messageId,
+      nextEmojiType,
+      prev: reaction
+        ? { emojiType: reaction.emojiType, reactionId: reaction.reactionId }
+        : undefined,
+      accountId,
+      runtime,
+    });
+  } catch (err) {
+    runtime?.log?.(`feishu[${accountId}]: failed to set status reaction: ${String(err)}`);
+  }
+
+  const task: FeishuInFlightTask = {
+    id: taskId,
+    provider: "feishu",
+    accountId,
+    chatId,
+    chatType,
+    userOpenId,
+    messageId,
+    originalText: originalText ?? prev?.originalText ?? "",
+    truncated: truncated ?? prev?.truncated,
+    state: nextState,
+    reaction: reaction
+      ? {
+          emojiType: reaction.emojiType,
+          reactionId: reaction.reactionId,
+        }
+      : prev?.reaction,
+    runId: prev?.runId,
+    resumeAttempts: prev?.resumeAttempts ?? 0,
+    updatedAtMs: now,
+    interruptedHandled: prev?.interruptedHandled,
+  };
+
+  const nextStore = upsertTask(store, task);
+  await writeFeishuInFlightStore({ filePath, store: nextStore });
 }
 
 function tryRecordMessage(messageId: string): boolean {
@@ -780,7 +896,7 @@ export async function handleFeishuMessage(params: {
       groupConfig,
     });
 
-    if (requireMention && !ctx.mentionedBot) {
+    if (requireMention && !ctx.mentionedBot && !isContinueMessage(ctx.content)) {
       log(
         `feishu[${account.accountId}]: message in group ${ctx.chatId} did not mention bot, recording to history`,
       );
@@ -817,6 +933,89 @@ export async function handleFeishuMessage(params: {
 
   try {
     const core = getFeishuRuntime();
+    const stateDir = core.state.resolveStateDir();
+
+    // "继续" support: resume the last interrupted/failed task for this chat.
+    const wantsContinue = isContinueMessage(ctx.content);
+    const { filePath: inflightPath, store: inflightStore } = await readFeishuInFlightStore({
+      stateDir,
+      accountId: account.accountId,
+    });
+
+    let inFlightTaskId = createInFlightId();
+    let anchorMessageId = ctx.messageId; // where reactions + replies attach
+    let originalTextForRun = ctx.content;
+    let truncateInfo: { text: string; truncated: boolean } | undefined;
+    let resumeSourceTask: FeishuInFlightTask | undefined;
+
+    if (wantsContinue) {
+      const last = getLastInterruptibleTask(inflightStore, ctx.chatId);
+      if (
+        last &&
+        (last.state === "interrupted" || last.state === "failed") &&
+        (last.resumeAttempts ?? 0) < 2 &&
+        (!isGroup || !last.userOpenId || last.userOpenId === ctx.senderOpenId)
+      ) {
+        resumeSourceTask = last;
+        inFlightTaskId = last.id;
+        anchorMessageId = last.messageId;
+        originalTextForRun = last.originalText;
+      } else {
+        // No resumable task; minimal guidance (rare and acceptable to send 1 line).
+        await sendMessageFeishu({
+          cfg,
+          to: isGroup ? ctx.chatId : ctx.senderOpenId,
+          replyToMessageId: ctx.messageId,
+          text: "我这边没找到可继续的上一条任务，你把要做的事再发一次我就能继续。",
+          accountId: account.accountId,
+        });
+        return;
+      }
+    }
+
+    // Create/refresh in-flight record and set initial RECEIVED status.
+    if (!resumeSourceTask) {
+      truncateInfo = clampOriginalText(originalTextForRun, 8000);
+      await setFeishuStatus({
+        cfg,
+        runtime,
+        stateDir,
+        accountId: account.accountId,
+        chatId: ctx.chatId,
+        chatType: isGroup ? "group" : "direct",
+        userOpenId: ctx.senderOpenId,
+        messageId: anchorMessageId,
+        taskId: inFlightTaskId,
+        nextState: "received",
+        nextEmojiType: FeishuEmoji.GLANCE,
+        originalText: truncateInfo.text,
+        truncated: truncateInfo.truncated,
+      });
+    } else {
+      // Resuming: bump attempts + move back to received.
+      const resumed: FeishuInFlightTask = {
+        ...resumeSourceTask,
+        resumeAttempts: (resumeSourceTask.resumeAttempts ?? 0) + 1,
+        updatedAtMs: Date.now(),
+        interruptedHandled: true,
+      };
+      let nextStore = upsertTask(inflightStore, resumed);
+      nextStore = setLastInterruptible(nextStore, ctx.chatId, resumed.id);
+      await writeFeishuInFlightStore({ filePath: inflightPath, store: nextStore });
+      await setFeishuStatus({
+        cfg,
+        runtime,
+        stateDir,
+        accountId: account.accountId,
+        chatId: ctx.chatId,
+        chatType: isGroup ? "group" : "direct",
+        userOpenId: ctx.senderOpenId,
+        messageId: anchorMessageId,
+        taskId: inFlightTaskId,
+        nextState: "received",
+        nextEmojiType: FeishuEmoji.GLANCE,
+      });
+    }
 
     // In group chats, the session is scoped to the group, but the *speaker* is the sender.
     // Using a group-scoped From causes the agent to treat different users as the same person.
@@ -1050,11 +1249,13 @@ export async function handleFeishuMessage(params: {
         : undefined;
 
     const ctxPayload = core.channel.reply.finalizeInboundContext({
-      Body: combinedBody,
-      BodyForAgent: ctx.content,
+      Body: wantsContinue
+        ? `${combinedBody}\n\n[system] 用户请求继续上一条被打断/失败的任务；以下为原始请求内容：\n${originalTextForRun}`
+        : combinedBody,
+      BodyForAgent: originalTextForRun,
       InboundHistory: inboundHistory,
-      RawBody: ctx.content,
-      CommandBody: ctx.content,
+      RawBody: originalTextForRun,
+      CommandBody: originalTextForRun,
       From: feishuFrom,
       To: feishuTo,
       SessionKey: route.sessionKey,
@@ -1076,14 +1277,87 @@ export async function handleFeishuMessage(params: {
       ...mediaPayload,
     });
 
+    let sawReplyStart = false;
+
     const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
       cfg,
       agentId: route.agentId,
       runtime: runtime as RuntimeEnv,
       chatId: ctx.chatId,
-      replyToMessageId: ctx.messageId,
+      replyToMessageId: anchorMessageId,
       mentionTargets: ctx.mentionTargets,
       accountId: account.accountId,
+      statusCallbacks: {
+        onReplyStart: async () => {
+          sawReplyStart = true;
+          await setFeishuStatus({
+            cfg,
+            runtime,
+            stateDir,
+            accountId: account.accountId,
+            chatId: ctx.chatId,
+            chatType: isGroup ? "group" : "direct",
+            userOpenId: ctx.senderOpenId,
+            messageId: anchorMessageId,
+            taskId: inFlightTaskId,
+            nextState: "working",
+            nextEmojiType: FeishuEmoji.ON_IT,
+          });
+        },
+        onIdle: async () => {
+          // Best-effort: if we're still in a working/waiting state, mark DONE and clear.
+          try {
+            const { filePath, store } = await readFeishuInFlightStore({
+              stateDir,
+              accountId: account.accountId,
+            });
+            if (!sawReplyStart) {
+              return;
+            }
+            const task = store.tasks.find((t) => t.id === inFlightTaskId);
+            if (!task) return;
+            if (["done", "failed", "interrupted"].includes(task.state)) return;
+            await setFeishuStatus({
+              cfg,
+              runtime,
+              stateDir,
+              accountId: account.accountId,
+              chatId: ctx.chatId,
+              chatType: isGroup ? "group" : "direct",
+              userOpenId: ctx.senderOpenId,
+              messageId: anchorMessageId,
+              taskId: inFlightTaskId,
+              nextState: "done",
+              nextEmojiType: FeishuEmoji.CHECK,
+            });
+            const { filePath: fp2, store: st2 } = await readFeishuInFlightStore({
+              stateDir,
+              accountId: account.accountId,
+            });
+            await writeFeishuInFlightStore({
+              filePath: fp2,
+              store: removeTask(st2, inFlightTaskId),
+            });
+          } catch {
+            // ignore
+          }
+        },
+      },
+    });
+
+    // Mark queued (we have accepted the work; actual typing will start on reply generation).
+    await setFeishuStatus({
+      cfg,
+      runtime,
+      stateDir,
+      accountId: account.accountId,
+      chatId: ctx.chatId,
+      chatType: isGroup ? "group" : "direct",
+      userOpenId: ctx.senderOpenId,
+      messageId: anchorMessageId,
+      taskId: inFlightTaskId,
+      nextState: "queued",
+      nextEmojiType: FeishuEmoji.ONE_SECOND,
     });
 
     log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
@@ -1096,6 +1370,54 @@ export async function handleFeishuMessage(params: {
     });
 
     markDispatchIdle();
+
+    if (counts.final === 0) {
+      if (queuedFinal) {
+        await setFeishuStatus({
+          cfg,
+          runtime,
+          stateDir,
+          accountId: account.accountId,
+          chatId: ctx.chatId,
+          chatType: isGroup ? "group" : "direct",
+          userOpenId: ctx.senderOpenId,
+          messageId: anchorMessageId,
+          taskId: inFlightTaskId,
+          nextState: "waiting",
+          nextEmojiType: FeishuEmoji.ALARM,
+        });
+      } else {
+        await setFeishuStatus({
+          cfg,
+          runtime,
+          stateDir,
+          accountId: account.accountId,
+          chatId: ctx.chatId,
+          chatType: isGroup ? "group" : "direct",
+          userOpenId: ctx.senderOpenId,
+          messageId: anchorMessageId,
+          taskId: inFlightTaskId,
+          nextState: "failed",
+          nextEmojiType: FeishuEmoji.ERROR,
+        });
+
+        // Minimal fallback (B): only when there is no user-visible reply.
+        await sendMessageFeishu({
+          cfg,
+          to: isGroup ? ctx.chatId : ctx.senderOpenId,
+          replyToMessageId: anchorMessageId,
+          text: "⚠️ 刚刚处理失败（接口校验/权限问题），没能发出结果；你回复“继续”我会按原任务重试。",
+          accountId: account.accountId,
+        });
+
+        const { filePath, store } = await readFeishuInFlightStore({
+          stateDir,
+          accountId: account.accountId,
+        });
+        const nextStore = setLastInterruptible(store, ctx.chatId, inFlightTaskId);
+        await writeFeishuInFlightStore({ filePath, store: nextStore });
+      }
+    }
 
     if (isGroup && historyKey && chatHistories) {
       clearHistoryEntriesIfEnabled({
@@ -1110,5 +1432,72 @@ export async function handleFeishuMessage(params: {
     );
   } catch (err) {
     error(`feishu[${account.accountId}]: failed to dispatch message: ${String(err)}`);
+  }
+}
+
+export async function reconcileFeishuInFlight(params: {
+  cfg: ClawdbotConfig;
+  accountId: string;
+  runtime?: RuntimeEnv;
+  maxAgeMs?: number;
+}): Promise<void> {
+  const { cfg, accountId, runtime } = params;
+  const maxAgeMs =
+    typeof params.maxAgeMs === "number" ? Math.max(0, params.maxAgeMs) : 24 * 60 * 60 * 1000;
+  const log = runtime?.log ?? console.log;
+  const error = runtime?.error ?? console.error;
+
+  const stateDir = getFeishuRuntime().state.resolveStateDir();
+  const { filePath, store } = await readFeishuInFlightStore({ stateDir, accountId });
+  const now = Date.now();
+
+  let nextStore = store;
+
+  for (const task of store.tasks) {
+    if (task.accountId !== accountId) continue;
+    if (task.interruptedHandled) continue;
+    if (!["queued", "working", "waiting"].includes(task.state)) continue;
+    if (now - task.updatedAtMs > maxAgeMs) continue;
+
+    try {
+      // Mark interrupted (⚠️)
+      const reaction = await replaceStatusReaction({
+        cfg,
+        messageId: task.messageId,
+        nextEmojiType: FeishuEmoji.ERROR,
+        prev: task.reaction
+          ? { emojiType: task.reaction.emojiType, reactionId: task.reaction.reactionId }
+          : undefined,
+        accountId,
+        runtime,
+      });
+
+      // Must send a single explanation message (user requirement).
+      await sendMessageFeishu({
+        cfg,
+        to: task.chatType === "group" ? task.chatId : (task.userOpenId ?? task.chatId),
+        replyToMessageId: task.messageId,
+        text: "⚠️ 我刚才在处理你这条消息时服务重启被打断了。你回复“继续”我会按原任务重跑。",
+        accountId,
+      });
+
+      const updated: FeishuInFlightTask = {
+        ...task,
+        state: "interrupted",
+        reaction: { emojiType: reaction.emojiType, reactionId: reaction.reactionId },
+        interruptedHandled: true,
+        updatedAtMs: now,
+      };
+
+      nextStore = upsertTask(nextStore, updated);
+      nextStore = setLastInterruptible(nextStore, task.chatId, task.id);
+    } catch (err) {
+      error(`feishu[${accountId}]: reconcile inflight failed: ${String(err)}`);
+    }
+  }
+
+  if (nextStore !== store) {
+    await writeFeishuInFlightStore({ filePath, store: nextStore });
+    log(`feishu[${accountId}]: inflight reconciliation complete`);
   }
 }

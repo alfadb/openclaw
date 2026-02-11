@@ -3,7 +3,12 @@ import * as Lark from "@larksuiteoapi/node-sdk";
 import * as http from "http";
 import type { ResolvedFeishuAccount } from "./types.js";
 import { resolveFeishuAccount, listEnabledFeishuAccounts } from "./accounts.js";
-import { handleFeishuMessage, type FeishuMessageEvent, type FeishuBotAddedEvent } from "./bot.js";
+import {
+  handleFeishuMessage,
+  reconcileFeishuInFlight,
+  type FeishuMessageEvent,
+  type FeishuBotAddedEvent,
+} from "./bot.js";
 import { createFeishuWSClient, createEventDispatcher } from "./client.js";
 import { probeFeishu } from "./probe.js";
 
@@ -111,6 +116,21 @@ async function monitorSingleAccount(params: MonitorAccountParams): Promise<void>
   const botOpenId = await fetchBotOpenId(account);
   botOpenIds.set(accountId, botOpenId ?? "");
   log(`feishu[${accountId}]: bot open_id resolved: ${botOpenId ?? "unknown"}`);
+
+  // Startup reconciliation: compensate any in-flight tasks interrupted by shutdown/restart.
+  try {
+    const { reconcileFeishuInFlightOnStartup } = await import("./startup-reconcile.js");
+    await reconcileFeishuInFlightOnStartup({ cfg, runtime, accountId });
+  } catch (err) {
+    log(`feishu[${accountId}]: startup reconcile skipped/failed: ${String(err)}`);
+  }
+
+  // Startup reconciliation: if we were interrupted mid-task, mark the original message and explain once.
+  try {
+    await reconcileFeishuInFlight({ cfg, accountId, runtime });
+  } catch (err) {
+    log(`feishu[${accountId}]: inflight reconcile skipped: ${String(err)}`);
+  }
 
   const connectionMode = account.config.connectionMode ?? "websocket";
   const eventDispatcher = createEventDispatcher(account);
