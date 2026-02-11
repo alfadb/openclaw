@@ -39,6 +39,8 @@ export type FeishuMessageContext = {
   mentionedBot: boolean;
   rootId?: string;
   parentId?: string;
+  /** User send time (ms since epoch) from Feishu event payload, if provided. */
+  createTimeMs?: number;
   content: string;
   contentType: string;
   /** Mention forward targets (excluding the bot itself) */

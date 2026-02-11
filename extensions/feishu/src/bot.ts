@@ -168,6 +168,8 @@ export type FeishuMessageEvent = {
     message_id: string;
     root_id?: string;
     parent_id?: string;
+    /** Message sent time (ms since epoch) as a string, per Feishu event payload. */
+    create_time?: string;
     chat_id: string;
     chat_type: "p2p" | "group";
     message_type: string;
@@ -492,6 +494,10 @@ export function parseFeishuMessageEvent(
   const mentionedBot = checkBotMentioned(event, botOpenId);
   const content = stripBotMention(rawContent, event.message.mentions);
 
+  const createTimeMs = event.message.create_time
+    ? Number.parseInt(event.message.create_time, 10)
+    : undefined;
+
   const ctx: FeishuMessageContext = {
     chatId: event.message.chat_id,
     messageId: event.message.message_id,
@@ -501,6 +507,7 @@ export function parseFeishuMessageEvent(
     mentionedBot,
     rootId: event.message.root_id || undefined,
     parentId: event.message.parent_id || undefined,
+    createTimeMs: Number.isFinite(createTimeMs as number) ? createTimeMs : undefined,
     content,
     contentType: event.message.message_type,
   };
@@ -567,8 +574,9 @@ export async function handleFeishuMessage(params: {
     }
   }
 
+  const sentAtLabel = ctx.createTimeMs ? ` sentAt=${new Date(ctx.createTimeMs).toISOString()}` : "";
   log(
-    `feishu[${account.accountId}]: received message from ${ctx.senderOpenId} in ${ctx.chatId} (${ctx.chatType})`,
+    `feishu[${account.accountId}]: received message from ${ctx.senderOpenId} in ${ctx.chatId} (${ctx.chatType})${sentAtLabel}`,
   );
 
   // Log mention targets if detected
@@ -845,10 +853,18 @@ export async function handleFeishuMessage(params: {
       markPermIdle();
     }
 
+    const inboundSentAtNote = ctx.createTimeMs
+      ? `[System: Feishu message create_time=${ctx.createTimeMs} (${new Date(ctx.createTimeMs).toISOString()})]`
+      : undefined;
+    if (inboundSentAtNote) {
+      messageBody = `${inboundSentAtNote}\n\n${messageBody}`;
+    }
+
     const body = core.channel.reply.formatAgentEnvelope({
       channel: "Feishu",
       from: envelopeFrom,
-      timestamp: new Date(),
+      // For the envelope timestamp, prefer Feishu message create_time if present.
+      timestamp: ctx.createTimeMs ? new Date(ctx.createTimeMs) : new Date(),
       envelope: envelopeOptions,
       body: messageBody,
     });
@@ -901,6 +917,7 @@ export async function handleFeishuMessage(params: {
       Surface: "feishu" as const,
       MessageSid: ctx.messageId,
       ReplyToBody: quotedContent ?? undefined,
+      // Preserve gateway-received timestamp for ordering, but include sent time in the envelope/body note.
       Timestamp: Date.now(),
       WasMentioned: ctx.mentionedBot,
       CommandAuthorized: true,
