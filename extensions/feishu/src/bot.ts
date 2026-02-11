@@ -1,4 +1,6 @@
 import type { ClawdbotConfig, RuntimeEnv } from "openclaw/plugin-sdk";
+import fs from "node:fs/promises";
+import path from "node:path";
 import {
   buildPendingHistoryContextFromMap,
   recordPendingHistoryEntryIfEnabled,
@@ -21,15 +23,86 @@ import {
 } from "./policy.js";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
 import { getFeishuRuntime } from "./runtime.js";
-import { getMessageFeishu } from "./send.js";
+import { getMessageFeishu, sendMessageFeishu } from "./send.js";
 
 // --- Message deduplication ---
 // Prevent duplicate processing when WebSocket reconnects or Feishu redelivers messages.
 const DEDUP_TTL_MS = 30 * 60 * 1000; // 30 minutes
 const DEDUP_MAX_SIZE = 1_000;
 const DEDUP_CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // cleanup every 5 minutes
-const processedMessageIds = new Map<string, number>(); // messageId -> timestamp
+const processedMessageIds = new Map<string, number>(); // messageId -> gateway timestamp
 let lastCleanupTime = Date.now();
+
+// Persistent per-chat watermark + recent message IDs.
+// Purpose:
+// 1) Survive gateway restarts (in-memory dedup is lost on restart).
+// 2) Drop stale/out-of-order deliveries based on Feishu message.create_time.
+const FEISHU_INBOUND_STATE_DIR = "feishu/inbound";
+const FEISHU_RECENT_IDS_LIMIT = 250;
+const FEISHU_STALE_SKEW_WINDOW_MS = 5_000;
+
+function resolveStaleDropConfig(feishuCfg: any): {
+  enabled: boolean;
+  reply: boolean;
+  skewWindowMs: number;
+  recentIdsLimit: number;
+} {
+  const cfg = (feishuCfg?.staleDrop ?? {}) as {
+    enabled?: boolean;
+    reply?: boolean;
+    skewWindowMs?: number;
+    recentIdsLimit?: number;
+  };
+
+  return {
+    enabled: cfg.enabled !== false,
+    reply: cfg.reply !== false,
+    skewWindowMs:
+      typeof cfg.skewWindowMs === "number" && Number.isFinite(cfg.skewWindowMs)
+        ? Math.max(0, Math.floor(cfg.skewWindowMs))
+        : FEISHU_STALE_SKEW_WINDOW_MS,
+    recentIdsLimit:
+      typeof cfg.recentIdsLimit === "number" && Number.isFinite(cfg.recentIdsLimit)
+        ? Math.max(1, Math.floor(cfg.recentIdsLimit))
+        : FEISHU_RECENT_IDS_LIMIT,
+  };
+}
+
+type FeishuInboundState = {
+  lastProcessedSentAtMs?: number;
+  recentMessageIds?: string[];
+  updatedAtMs?: number;
+};
+
+async function readFeishuInboundState(params: {
+  stateDir: string;
+  accountId: string;
+  chatId: string;
+}): Promise<{ filePath: string; state: FeishuInboundState }> {
+  const { stateDir, accountId, chatId } = params;
+  const safeChat = encodeURIComponent(chatId);
+  const dir = path.join(stateDir, FEISHU_INBOUND_STATE_DIR);
+  const filePath = path.join(dir, `${accountId}-${safeChat}.json`);
+
+  try {
+    const raw = await fs.readFile(filePath, "utf-8");
+    const state = JSON.parse(raw) as FeishuInboundState;
+    return { filePath, state: state && typeof state === "object" ? state : {} };
+  } catch {
+    return { filePath, state: {} };
+  }
+}
+
+async function writeFeishuInboundState(params: {
+  filePath: string;
+  state: FeishuInboundState;
+}): Promise<void> {
+  const { filePath, state } = params;
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tmp = `${filePath}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(state, null, 2) + "\n", "utf-8");
+  await fs.rename(tmp, filePath);
+}
 
 function tryRecordMessage(messageId: string): boolean {
   const now = Date.now();
@@ -552,6 +625,83 @@ export async function handleFeishuMessage(params: {
 
   let ctx = parseFeishuMessageEvent(event, botOpenId);
   const isGroup = ctx.chatType === "group";
+
+  const staleCfg = resolveStaleDropConfig(feishuCfg);
+
+  // Persistent dedup + stale drop (best-effort).
+  // If Feishu redelivers old messages hours later, do not pass them to the model.
+  if (staleCfg.enabled) {
+    try {
+      const stateDir = getFeishuRuntime().state.resolveStateDir();
+      const { filePath, state } = await readFeishuInboundState({
+        stateDir,
+        accountId: account.accountId,
+        chatId: ctx.chatId,
+      });
+
+      const recent = Array.isArray(state.recentMessageIds) ? state.recentMessageIds : [];
+      if (recent.includes(ctx.messageId)) {
+        log(
+          `feishu[${account.accountId}]: skipping duplicate message ${ctx.messageId} (persistent)`,
+        );
+        return;
+      }
+
+      const sentAt = ctx.createTimeMs;
+      const last = state.lastProcessedSentAtMs;
+      if (typeof sentAt === "number" && Number.isFinite(sentAt) && typeof last === "number") {
+        if (sentAt < last - staleCfg.skewWindowMs) {
+          const staleText =
+            `过期消息，被忽略。\n` +
+            `sentAt=${sentAt} (${new Date(sentAt).toISOString()})\n` +
+            `lastProcessedSentAt=${last} (${new Date(last).toISOString()})\n` +
+            `reason=out_of_order_delivery`;
+
+          if (staleCfg.reply) {
+            // Reply directly, do not involve the model.
+            await sendMessageFeishu({
+              cfg,
+              // For replies, the message_id is the true anchor; `to` is just used for target validation.
+              to: isGroup ? ctx.chatId : ctx.senderOpenId,
+              replyToMessageId: ctx.messageId,
+              text: staleText,
+              accountId: account.accountId,
+            });
+          }
+
+          // Record as seen to prevent repeated stale deliveries.
+          recent.push(ctx.messageId);
+          const nextRecent = recent.slice(-staleCfg.recentIdsLimit);
+          await writeFeishuInboundState({
+            filePath,
+            state: {
+              ...state,
+              recentMessageIds: nextRecent,
+              updatedAtMs: Date.now(),
+            },
+          });
+          return;
+        }
+      }
+
+      // Update watermark + recent IDs.
+      const nextLast =
+        typeof sentAt === "number" && Number.isFinite(sentAt) ? Math.max(last ?? 0, sentAt) : last;
+      recent.push(ctx.messageId);
+      const nextRecent = recent.slice(-staleCfg.recentIdsLimit);
+      await writeFeishuInboundState({
+        filePath,
+        state: {
+          lastProcessedSentAtMs: nextLast,
+          recentMessageIds: nextRecent,
+          updatedAtMs: Date.now(),
+        },
+      });
+    } catch (err) {
+      // Best-effort; never block message handling.
+      log(`feishu[${account.accountId}]: persistent dedup/stale check failed: ${String(err)}`);
+    }
+  }
 
   // Resolve sender display name (best-effort) so the agent can attribute messages correctly.
   const senderResult = await resolveFeishuSenderName({
