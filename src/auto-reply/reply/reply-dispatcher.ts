@@ -73,6 +73,14 @@ export type ReplyDispatcher = {
   sendToolResult: (payload: ReplyPayload) => boolean;
   sendBlockReply: (payload: ReplyPayload) => boolean;
   sendFinalReply: (payload: ReplyPayload) => boolean;
+  /**
+   * Mark that a final reply was delivered via an external path (for example,
+   * the agent used a messaging tool to send the user-visible response directly).
+   *
+   * This does NOT deliver any payload; it only updates queued counts so channel
+   * integrations can avoid false "no final reply" fallbacks.
+   */
+  noteExternalFinalSent: (source: string) => void;
   waitForIdle: () => Promise<void>;
   getQueuedCounts: () => Record<ReplyDispatchKind, number>;
   markComplete: () => void;
@@ -200,6 +208,9 @@ export function createReplyDispatcher(options: ReplyDispatcherOptions): ReplyDis
     sendToolResult: (payload) => enqueue("tool", payload),
     sendBlockReply: (payload) => enqueue("block", payload),
     sendFinalReply: (payload) => enqueue("final", payload),
+    noteExternalFinalSent: (_source: string) => {
+      queuedCounts.final += 1;
+    },
     waitForIdle: () => sendChain,
     getQueuedCounts: () => ({ ...queuedCounts }),
     markComplete,

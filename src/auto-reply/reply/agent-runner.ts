@@ -440,6 +440,9 @@ export async function runReplyAgent(params: {
     // Otherwise, a late typing trigger (e.g. from a tool callback) can outlive the run and
     // keep the typing indicator stuck.
     if (payloadArray.length === 0) {
+      if (runResult.didSendViaMessagingTool) {
+        await params.opts?.onExternalFinalSent?.({ source: "messagingTool" });
+      }
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 
@@ -464,6 +467,9 @@ export async function runReplyAgent(params: {
     didLogHeartbeatStrip = payloadResult.didLogHeartbeatStrip;
 
     if (replyPayloads.length === 0) {
+      if (runResult.didSendViaMessagingTool) {
+        await params.opts?.onExternalFinalSent?.({ source: "messagingTool" });
+      }
       return finalizeWithFollowup(undefined, queueKey, runFollowupTurn);
     }
 

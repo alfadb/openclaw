@@ -310,6 +310,14 @@ export async function dispatchReplyFromConfig(params: {
       ctx,
       {
         ...params.replyOptions,
+        onExternalFinalSent: async (payload) => {
+          // Always mark the dispatcher counts so channel integrations can avoid
+          // false "no final reply" fallbacks when the agent delivered via a
+          // messaging tool.
+          dispatcher.noteExternalFinalSent(payload.source);
+          // Preserve any upstream callbacks.
+          await params.replyOptions?.onExternalFinalSent?.(payload);
+        },
         onToolResult: (payload: ReplyPayload) => {
           const run = async () => {
             const ttsPayload = await maybeApplyTtsToPayload({
