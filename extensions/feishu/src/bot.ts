@@ -1378,7 +1378,9 @@ export async function handleFeishuMessage(params: {
     if (counts.final === 0) {
       // Diagnostics: we had no final user-visible replies.
       log(
-        `feishu[${account.accountId}]: no final reply (queuedFinal=${queuedFinal}, sawReplyStart=${sawReplyStart})`,
+        `feishu[${account.accountId}]: no final reply (queuedFinal=${queuedFinal}, sawReplyStart=${sawReplyStart}, counts=${JSON.stringify(
+          counts,
+        )}, parentId=${ctx.parentId ?? ""})`,
       );
 
       if (queuedFinal) {
