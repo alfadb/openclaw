@@ -14,6 +14,9 @@ import {
 } from "../utils/queue-helpers.js";
 
 export type AnnounceQueueItem = {
+  // Stable announce identity shared by direct + queued delivery paths.
+  // Optional for backward compatibility with previously queued items.
+  announceId?: string;
   prompt: string;
   summaryLine?: string;
   enqueuedAt: number;
@@ -29,6 +32,7 @@ export type AnnounceQueueSettings = {
   debounceMs?: number;
   cap?: number;
   dropPolicy?: QueueDropPolicy;
+  /** Optional max queue age for items before they are dropped (0 disables). */
   maxAgeMs?: number;
 };
 
@@ -48,6 +52,34 @@ type AnnounceQueueState = {
 
 const ANNOUNCE_QUEUES = new Map<string, AnnounceQueueState>();
 
+function previewQueueSummaryPrompt(queue: AnnounceQueueState): string | undefined {
+  return buildQueueSummaryPrompt({
+    state: {
+      dropPolicy: queue.dropPolicy,
+      droppedCount: queue.droppedCount,
+      summaryLines: [...queue.summaryLines],
+    },
+    noun: "announce",
+  });
+}
+
+function clearQueueSummaryState(queue: AnnounceQueueState) {
+  queue.droppedCount = 0;
+  queue.summaryLines = [];
+}
+
+export function resetAnnounceQueuesForTests() {
+  // Test isolation: other suites may leave a draining queue behind in the worker.
+  // Clearing the map alone isn't enough because drain loops capture `queue` by reference.
+  for (const queue of ANNOUNCE_QUEUES.values()) {
+    queue.items.length = 0;
+    queue.summaryLines.length = 0;
+    queue.droppedCount = 0;
+    queue.lastEnqueuedAt = 0;
+  }
+  ANNOUNCE_QUEUES.clear();
+}
+
 function isStaleItem(queue: AnnounceQueueState, item: AnnounceQueueItem, now = Date.now()) {
   if (item.highPriority) {
     return false;
@@ -56,6 +88,28 @@ function isStaleItem(queue: AnnounceQueueState, item: AnnounceQueueItem, now = D
     return false;
   }
   return now - item.enqueuedAt > queue.maxAgeMs;
+}
+
+async function sendIfFresh(queue: AnnounceQueueState, key: string, item: AnnounceQueueItem) {
+  const now = Date.now();
+  const queueAgeMs = Math.max(0, now - item.enqueuedAt);
+  if (isStaleItem(queue, item, now)) {
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] stale_message_dropped key=${key} queue_age_ms=${queueAgeMs} max_age_ms=${queue.maxAgeMs}`,
+    );
+    return;
+  }
+  try {
+    await queue.send(item);
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] queue_delivery key=${key} queue_age_ms=${queueAgeMs}`,
+    );
+  } catch (err) {
+    defaultRuntime.log?.(
+      `[subagent_announce_metric] queue_delivery_failed key=${key} queue_age_ms=${queueAgeMs} error=${encodeURIComponent(String(err))}`,
+    );
+    throw err;
+  }
 }
 
 function getAnnounceQueue(
@@ -102,25 +156,23 @@ function getAnnounceQueue(
   return created;
 }
 
-async function sendIfFresh(queue: AnnounceQueueState, key: string, item: AnnounceQueueItem) {
-  const now = Date.now();
-  const queueAgeMs = Math.max(0, now - item.enqueuedAt);
-  if (isStaleItem(queue, item, now)) {
-    defaultRuntime.log?.(
-      `[subagent_announce_metric] stale_message_dropped key=${key} queue_age_ms=${queueAgeMs} max_age_ms=${queue.maxAgeMs}`,
-    );
+function dropStaleItemsInPlace(queue: AnnounceQueueState, key: string, now: number) {
+  if (!Number.isFinite(queue.maxAgeMs) || queue.maxAgeMs <= 0) {
     return;
   }
-  try {
-    await queue.send(item);
-    defaultRuntime.log?.(
-      `[subagent_announce_metric] queue_delivery key=${key} queue_age_ms=${queueAgeMs}`,
-    );
-  } catch (err) {
-    defaultRuntime.log?.(
-      `[subagent_announce_metric] queue_delivery_failed key=${key} queue_age_ms=${queueAgeMs} error=${encodeURIComponent(String(err))}`,
-    );
-    throw err;
+  const fresh: AnnounceQueueItem[] = [];
+  for (const item of queue.items) {
+    if (isStaleItem(queue, item, now)) {
+      const queueAgeMs = Math.max(0, now - item.enqueuedAt);
+      defaultRuntime.log?.(
+        `[subagent_announce_metric] stale_message_dropped key=${key} queue_age_ms=${queueAgeMs} max_age_ms=${queue.maxAgeMs}`,
+      );
+      continue;
+    }
+    fresh.push(item);
+  }
+  if (fresh.length !== queue.items.length) {
+    queue.items.splice(0, queue.items.length, ...fresh);
   }
 }
 
@@ -135,13 +187,18 @@ function scheduleAnnounceDrain(key: string) {
       let forceIndividualCollect = false;
       while (queue.items.length > 0 || queue.droppedCount > 0) {
         await waitForQueueDebounce(queue);
+
+        // Drop stale items before any delivery attempt, so we don't loop on stale-only queues.
+        dropStaleItemsInPlace(queue, key, Date.now());
+
         if (queue.mode === "collect") {
           if (forceIndividualCollect) {
-            const next = queue.items.shift();
+            const next = queue.items[0];
             if (!next) {
               break;
             }
             await sendIfFresh(queue, key, next);
+            queue.items.shift();
             continue;
           }
           const isCrossChannel = hasCrossChannelItems(queue.items, (item) => {
@@ -155,57 +212,57 @@ function scheduleAnnounceDrain(key: string) {
           });
           if (isCrossChannel) {
             forceIndividualCollect = true;
-            const next = queue.items.shift();
+            const next = queue.items[0];
             if (!next) {
               break;
             }
             await sendIfFresh(queue, key, next);
+            queue.items.shift();
             continue;
           }
-          const items = queue.items.splice(0, queue.items.length);
-          const now = Date.now();
-          const freshItems = items.filter((item) => {
-            const stale = isStaleItem(queue, item, now);
-            if (stale) {
-              const queueAgeMs = Math.max(0, now - item.enqueuedAt);
-              defaultRuntime.log?.(
-                `[subagent_announce_metric] stale_message_dropped key=${key} queue_age_ms=${queueAgeMs} max_age_ms=${queue.maxAgeMs}`,
-              );
-            }
-            return !stale;
-          });
-          const summary = buildQueueSummaryPrompt({ state: queue, noun: "announce" });
+
+          const items = queue.items.slice();
+          const summary = previewQueueSummaryPrompt(queue);
           const prompt = buildCollectPrompt({
             title: "[Queued announce messages while agent was busy]",
-            items: freshItems,
+            items,
             summary,
             renderItem: (item, idx) => `---\nQueued #${idx + 1}\n${item.prompt}`.trim(),
           });
-          const last = freshItems.at(-1);
+          const last = items.at(-1);
           if (!last) {
-            continue;
+            break;
           }
           await sendIfFresh(queue, key, { ...last, prompt });
+          queue.items.splice(0, items.length);
+          if (summary) {
+            clearQueueSummaryState(queue);
+          }
           continue;
         }
 
-        const summaryPrompt = buildQueueSummaryPrompt({ state: queue, noun: "announce" });
+        const summaryPrompt = previewQueueSummaryPrompt(queue);
         if (summaryPrompt) {
-          const next = queue.items.shift();
+          const next = queue.items[0];
           if (!next) {
             break;
           }
           await sendIfFresh(queue, key, { ...next, prompt: summaryPrompt });
+          queue.items.shift();
+          clearQueueSummaryState(queue);
           continue;
         }
 
-        const next = queue.items.shift();
+        const next = queue.items[0];
         if (!next) {
           break;
         }
         await sendIfFresh(queue, key, next);
+        queue.items.shift();
       }
     } catch (err) {
+      // Keep items in queue and retry after debounce; avoid hot-loop retries.
+      queue.lastEnqueuedAt = Date.now();
       defaultRuntime.error?.(`announce queue drain failed for ${key}: ${String(err)}`);
     } finally {
       queue.draining = false;
