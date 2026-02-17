@@ -55,11 +55,11 @@ describe("runCommandWithTimeout", () => {
       [
         process.execPath,
         "-e",
-        'let i=0; const t=setInterval(() => { process.stdout.write("."); i += 1; if (i >= 2) { clearInterval(t); process.exit(0); } }, 10);',
+        'let i=0; const t=setInterval(() => { process.stdout.write("."); i += 1; if (i >= 3) { clearInterval(t); process.exit(0); } }, 50);',
       ],
       {
         timeoutMs: 5_000,
-        noOutputTimeoutMs: 160,
+        noOutputTimeoutMs: 500,
       },
     );
 

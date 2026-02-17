@@ -58,13 +58,16 @@ test("exec tears down PTY resources on timeout", async () => {
   }));
 
   const tool = createExecTool({ allowBackground: false });
-  await expect(
-    tool.execute("toolcall", {
-      command: "sleep 5",
-      pty: true,
-      timeout: 0.01,
-    }),
-  ).rejects.toThrow("Command timed out");
+  const result = await tool.execute("toolcall", {
+    command: "sleep 5",
+    pty: true,
+    timeout: 0.01,
+  });
+
+  // Timeout should be surfaced as a failed tool result (not a thrown error),
+  // while still ensuring PTY resources are cleaned up.
+  expect(result.details.status).toBe("failed");
+  expect(result.content.find((entry) => entry.type === "text")?.text ?? "").toContain("timed out");
   expect(kill).toHaveBeenCalledTimes(1);
   expect(disposeData).toHaveBeenCalledTimes(1);
   expect(disposeExit).toHaveBeenCalledTimes(1);

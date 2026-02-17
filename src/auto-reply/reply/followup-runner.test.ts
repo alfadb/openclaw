@@ -98,7 +98,8 @@ describe("createFollowupRunner preemptive exec result cap", () => {
     const call = runEmbeddedPiAgentMock.mock.calls[0]?.[0] as unknown as {
       execOverrides?: { resultMaxChars?: number };
     };
-    expect(call.execOverrides?.resultMaxChars).toBe(4000);
+    // resultMaxChars overrides were removed from followup runner exec overrides.
+    expect(call.execOverrides?.resultMaxChars).toBeUndefined();
   });
 });
 

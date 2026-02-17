@@ -35,7 +35,18 @@ describe("browser control server", () => {
 });
 
 describe("profile CRUD endpoints", () => {
+  let prevVitestEnv: string | undefined;
+  let prevGatewayToken: string | undefined;
+  let prevGatewayPassword: string | undefined;
+
   beforeEach(async () => {
+    prevVitestEnv = process.env.VITEST;
+    process.env.VITEST = "1";
+    prevGatewayToken = process.env.OPENCLAW_GATEWAY_TOKEN;
+    prevGatewayPassword = process.env.OPENCLAW_GATEWAY_PASSWORD;
+    delete process.env.OPENCLAW_GATEWAY_TOKEN;
+    delete process.env.OPENCLAW_GATEWAY_PASSWORD;
+
     state.reachable = false;
     state.cfgAttachOnly = false;
 
@@ -70,6 +81,21 @@ describe("profile CRUD endpoints", () => {
       delete process.env.OPENCLAW_GATEWAY_PORT;
     } else {
       process.env.OPENCLAW_GATEWAY_PORT = state.prevGatewayPort;
+    }
+    if (prevVitestEnv === undefined) {
+      delete process.env.VITEST;
+    } else {
+      process.env.VITEST = prevVitestEnv;
+    }
+    if (prevGatewayToken === undefined) {
+      delete process.env.OPENCLAW_GATEWAY_TOKEN;
+    } else {
+      process.env.OPENCLAW_GATEWAY_TOKEN = prevGatewayToken;
+    }
+    if (prevGatewayPassword === undefined) {
+      delete process.env.OPENCLAW_GATEWAY_PASSWORD;
+    } else {
+      process.env.OPENCLAW_GATEWAY_PASSWORD = prevGatewayPassword;
     }
     await stopBrowserControlServer();
   });

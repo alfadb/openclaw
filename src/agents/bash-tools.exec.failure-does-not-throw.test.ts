@@ -20,15 +20,15 @@ describe("exec tool failure handling", () => {
       timeout: 30,
     });
 
-    expect(result.details?.status).toBe("failed");
-    if (result.details && result.details.status === "failed") {
-      // exitCode may be null when the process was terminated by a signal.
-      expect("exitCode" in result.details).toBe(true);
-      expect(result.details.error).toBeTruthy();
+    expect(result.details?.status).toBe("completed");
+    if (result.details && result.details.status === "completed") {
+      expect(result.details.exitCode).toBe(7);
+      expect(result.details.aggregated).toContain("boom");
+      expect(result.details.aggregated).toContain("Command exited with code 7");
     }
 
     const text = result.content.find((entry) => entry.type === "text")?.text ?? "";
-    expect(text).toContain("Command failed");
     expect(text).toContain("boom");
+    expect(text).toContain("Command exited with code 7");
   });
 });

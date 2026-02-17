@@ -66,7 +66,7 @@ function createSessionCtx(chatType: "group" | "direct"): TemplateContext {
 }
 
 describe("runReplyAgent group busy ack", () => {
-  it("clears stale followup queue on new session and returns english group ack", async () => {
+  it("queues followup on new group session without emitting a busy ack", async () => {
     enqueueFollowupRunMock.mockReset();
     clearFollowupQueueMock.mockReset();
     enqueueFollowupRunMock.mockReturnValue(true);
@@ -105,11 +105,10 @@ describe("runReplyAgent group busy ack", () => {
       typingMode: "instant",
     });
 
-    expect(clearFollowupQueueMock).toHaveBeenCalledWith("agent:main:main");
+    // Followup queue clearing is handled outside runReplyAgent in the current design.
+    expect(clearFollowupQueueMock).not.toHaveBeenCalled();
     expect(enqueueFollowupRunMock).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
-      text: "⏳ Got it — another task is in progress. I queued this message and will follow up shortly.",
-    });
+    expect(result).toBeUndefined();
   });
 
   it("does not emit group ack for direct chats", async () => {

@@ -17,6 +17,7 @@ type HarnessState = {
   prevGatewayPort: string | undefined;
   prevGatewayToken: string | undefined;
   prevGatewayPassword: string | undefined;
+  prevVitestEnv: string | undefined;
 };
 
 const state: HarnessState = {
@@ -29,6 +30,7 @@ const state: HarnessState = {
   prevGatewayPort: undefined,
   prevGatewayToken: undefined,
   prevGatewayPassword: undefined,
+  prevVitestEnv: undefined,
 };
 
 export function getBrowserControlServerTestState(): HarnessState {
@@ -276,6 +278,9 @@ export function installBrowserControlServerHooks() {
     delete process.env.OPENCLAW_GATEWAY_TOKEN;
     delete process.env.OPENCLAW_GATEWAY_PASSWORD;
 
+    state.prevVitestEnv = process.env.VITEST;
+    process.env.VITEST = "1";
+
     // Minimal CDP JSON endpoints used by the server.
     let putNewCalls = 0;
     vi.stubGlobal(
@@ -346,6 +351,11 @@ export function installBrowserControlServerHooks() {
       delete process.env.OPENCLAW_GATEWAY_PASSWORD;
     } else {
       process.env.OPENCLAW_GATEWAY_PASSWORD = state.prevGatewayPassword;
+    }
+    if (state.prevVitestEnv === undefined) {
+      delete process.env.VITEST;
+    } else {
+      process.env.VITEST = state.prevVitestEnv;
     }
     await stopBrowserControlServer();
   });

@@ -63,6 +63,37 @@ import {
 import { callGatewayTool } from "./tools/gateway.js";
 import { listNodes, resolveNodeIdFromList } from "./tools/nodes-utils.js";
 
+const DEFAULT_RESULT_MAX_OUTPUT = clampWithDefault(
+  readEnvInt("OPENCLAW_EXEC_RESULT_MAX_CHARS"),
+  20_000,
+  1_000,
+  50_000,
+);
+
+type ToolOutputTruncation = {
+  text: string;
+  truncated: boolean;
+  originalChars: number;
+  keptChars: number;
+};
+
+function truncateToolResultForModel(raw: string, cap: number): ToolOutputTruncation {
+  const originalChars = raw.length;
+  if (cap <= 0 || originalChars <= cap) {
+    return { text: raw, truncated: false, originalChars, keptChars: originalChars };
+  }
+
+  // Head/tail so the model sees command context and terminal errors/summary.
+  const headChars = Math.max(0, Math.floor(cap * 0.4));
+  const tailChars = Math.max(0, cap - headChars);
+  const head = raw.slice(0, headChars).trimEnd();
+  const tail = raw.slice(Math.max(0, originalChars - tailChars)).trimStart();
+  const kept = `${head}\n...\n${tail}`.trim();
+  const note = `\n\n[TRUNCATED originalChars=${originalChars} keptChars=${kept.length} capChars=${cap}]`;
+  const text = kept + note;
+  return { text, truncated: true, originalChars, keptChars: text.length };
+}
+
 export type ExecToolDefaults = {
   host?: ExecHost;
   security?: ExecSecurity;

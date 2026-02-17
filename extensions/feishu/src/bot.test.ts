@@ -1,5 +1,8 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "openclaw/plugin-sdk";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FeishuMessageEvent } from "./bot.js";
 import { handleFeishuMessage } from "./bot.js";
 import { setFeishuRuntime } from "./runtime.js";
@@ -26,6 +29,7 @@ vi.mock("./send.js", () => ({
 }));
 
 describe("handleFeishuMessage command authorization", () => {
+  let stateDir = "";
   const mockFinalizeInboundContext = vi.fn((ctx: unknown) => ctx);
   const mockDispatchReplyFromConfig = vi
     .fn()
@@ -36,11 +40,15 @@ describe("handleFeishuMessage command authorization", () => {
   const mockUpsertPairingRequest = vi.fn().mockResolvedValue({ code: "ABCDEFGH", created: false });
   const mockBuildPairingReply = vi.fn(() => "Pairing response");
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.clearAllMocks();
+    stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-feishu-test-"));
     setFeishuRuntime({
       system: {
         enqueueSystemEvent: vi.fn(),
+      },
+      state: {
+        resolveStateDir: () => stateDir,
       },
       channel: {
         routing: {
@@ -68,6 +76,12 @@ describe("handleFeishuMessage command authorization", () => {
         },
       },
     } as unknown as PluginRuntime);
+  });
+
+  afterEach(async () => {
+    if (stateDir) {
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("uses authorizer resolution instead of hardcoded CommandAuthorized=true", async () => {

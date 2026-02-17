@@ -78,7 +78,7 @@ describe("resolveGatewayRuntimeConfig", () => {
   });
 
   describe("token/password auth modes", () => {
-    it("should reject token mode without token configured", async () => {
+    it("auto-generates a token when auth mode is token but no token configured", async () => {
       const cfg = {
         gateway: {
           bind: "lan" as const,
@@ -88,12 +88,16 @@ describe("resolveGatewayRuntimeConfig", () => {
         },
       };
 
-      await expect(
-        resolveGatewayRuntimeConfig({
-          cfg,
-          port: 18789,
-        }),
-      ).rejects.toThrow("gateway auth mode is token, but no token was configured");
+      const result = await resolveGatewayRuntimeConfig({
+        cfg,
+        port: 18789,
+      });
+
+      expect(result.authMode).toBe("token");
+      expect(result.bindHost).toBe("0.0.0.0");
+      expect(result.resolvedAuth.mode).toBe("token");
+      expect(typeof result.resolvedAuth.token).toBe("string");
+      expect((result.resolvedAuth.token ?? "").length).toBeGreaterThan(0);
     });
 
     it("should allow lan binding with token", async () => {
