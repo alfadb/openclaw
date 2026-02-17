@@ -45,6 +45,7 @@ import {
 } from "../pi-embedded-helpers.js";
 import {
   buildEditExactMatchRecoverySystemPrompt,
+  buildEditNotUniqueRecoverySystemPrompt,
   classifyRecoverableToolError,
 } from "../recoverable-tool-errors.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
@@ -553,27 +554,39 @@ export async function runEmbeddedPiAgent(
           // avoid loops and avoid mutating actions being repeated indefinitely.
           if (!aborted && !recoverableToolRetryAttempted) {
             const recoverable = classifyRecoverableToolError(attempt.lastToolError);
-            if (recoverable?.kind === "EDIT_EXACT_MATCH_NOT_FOUND" && recoverable.path) {
+            const recoverablePath = recoverable?.path;
+            const recoverableKind = recoverable?.kind;
+            if (
+              (recoverableKind === "EDIT_EXACT_MATCH_NOT_FOUND" ||
+                recoverableKind === "EDIT_NOT_UNIQUE") &&
+              recoverablePath
+            ) {
               recoverableToolRetryAttempted = true;
               try {
-                const raw = await fs.readFile(recoverable.path, "utf8");
+                const raw = await fs.readFile(recoverablePath, "utf8");
                 const maxLines = 200;
                 const head = raw.split("\n").slice(0, maxLines).join("\n");
                 const base = params.extraSystemPrompt ? `${params.extraSystemPrompt}\n\n` : "";
                 recoveryExtraSystemPrompt =
                   base +
-                  buildEditExactMatchRecoverySystemPrompt({
-                    path: recoverable.path,
-                    fileHead: head,
-                    maxLines,
-                  });
+                  (recoverableKind === "EDIT_NOT_UNIQUE"
+                    ? buildEditNotUniqueRecoverySystemPrompt({
+                        path: recoverablePath,
+                        fileHead: head,
+                        maxLines,
+                      })
+                    : buildEditExactMatchRecoverySystemPrompt({
+                        path: recoverablePath,
+                        fileHead: head,
+                        maxLines,
+                      }));
                 log.warn(
-                  `[recoverable-tool-error] Retrying once after ${recoverable.kind}: path=${recoverable.path}`,
+                  `[recoverable-tool-error] Retrying once after ${recoverableKind}: path=${recoverablePath}`,
                 );
                 continue;
               } catch (err) {
                 log.warn(
-                  `[recoverable-tool-error] Recovery read failed for path=${recoverable.path}: ${String(err)}`,
+                  `[recoverable-tool-error] Recovery read failed for path=${recoverablePath}: ${String(err)}`,
                 );
                 // Fall through to normal handling.
               }
