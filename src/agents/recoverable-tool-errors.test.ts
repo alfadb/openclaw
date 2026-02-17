@@ -15,6 +15,19 @@ describe("classifyRecoverableToolError", () => {
     });
   });
 
+  it("detects edit not unique and extracts path", () => {
+    const out = classifyRecoverableToolError({
+      toolName: "edit",
+      error:
+        "Found 19 occurrences of the text in /home/user/file.md. The text must be unique. Please provide more context to make it unique.",
+    });
+    expect(out).toMatchObject({
+      kind: "EDIT_NOT_UNIQUE",
+      toolName: "edit",
+      path: "/home/user/file.md",
+    });
+  });
+
   it("returns null for other tool errors", () => {
     expect(classifyRecoverableToolError({ toolName: "read", error: "missing path" })).toBeNull();
   });

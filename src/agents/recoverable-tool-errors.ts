@@ -1,4 +1,4 @@
-export type RecoverableToolErrorKind = "EDIT_EXACT_MATCH_NOT_FOUND";
+export type RecoverableToolErrorKind = "EDIT_EXACT_MATCH_NOT_FOUND" | "EDIT_NOT_UNIQUE";
 
 export type RecoverableToolError = {
   kind: RecoverableToolErrorKind;
@@ -34,6 +34,18 @@ export function classifyRecoverableToolError(
         rawError: error,
       };
     }
+
+    const notUnique = /Found\s+\d+\s+occurrences of the text\b/i.test(error);
+    if (notUnique) {
+      const fileMatch = error.match(/occurrences of the text in ([^\n]+?)\.\s*The text/i);
+      const path = fileMatch?.[1]?.trim();
+      return {
+        kind: "EDIT_NOT_UNIQUE",
+        toolName,
+        path: path || undefined,
+        rawError: error,
+      };
+    }
   }
 
   return null;
@@ -52,6 +64,29 @@ export function buildEditExactMatchRecoverySystemPrompt(args: {
     "- Prefer calling read(path) again if you need more context.",
     "- Keep oldText minimal and uniquely identifiable (e.g., a single header line).",
     "- If you cannot safely repair with edit after one attempt, explain why and ask before using write().",
+    "",
+    `Target path: ${args.path}`,
+    `Here are the first ~${args.maxLines} lines of the file (may be truncated):`,
+    "```",
+    args.fileHead,
+    "```",
+  ].join("\n");
+}
+
+export function buildEditNotUniqueRecoverySystemPrompt(args: {
+  path: string;
+  fileHead: string;
+  maxLines: number;
+}): string {
+  return [
+    "You are in an automatic recovery step.",
+    "A previous edit() tool call failed with: EDIT_NOT_UNIQUE.",
+    "Reason: the provided oldText matched multiple places in the file.",
+    "Your job: retry edit() with an oldText anchor that matches EXACTLY ONCE.",
+    "Constraints:",
+    "- Prefer a longer anchor that includes surrounding lines to make it unique.",
+    "- The oldText must match exactly including whitespace/newlines.",
+    "- If you cannot safely identify a unique anchor after one attempt, explain why and ask before using write().",
     "",
     `Target path: ${args.path}`,
     `Here are the first ~${args.maxLines} lines of the file (may be truncated):`,
