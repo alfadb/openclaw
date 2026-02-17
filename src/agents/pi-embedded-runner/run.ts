@@ -43,6 +43,10 @@ import {
   pickFallbackThinkingLevel,
   type FailoverReason,
 } from "../pi-embedded-helpers.js";
+import {
+  buildEditExactMatchRecoverySystemPrompt,
+  classifyRecoverableToolError,
+} from "../recoverable-tool-errors.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../usage.js";
 import { redactRunIdentifier, resolveRunWorkspaceDir } from "../workspace-run.js";
 import { compactEmbeddedPiSessionDirect } from "./compact.js";
@@ -462,6 +466,8 @@ export async function runEmbeddedPiAgent(
       const MAX_OVERFLOW_COMPACTION_ATTEMPTS = 3;
       let overflowCompactionAttempts = 0;
       let toolResultTruncationAttempted = false;
+      let recoverableToolRetryAttempted = false;
+      let recoveryExtraSystemPrompt: string | undefined;
       const usageAccumulator = createUsageAccumulator();
       let lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
       let autoCompactionCount = 0;
@@ -525,7 +531,7 @@ export async function runEmbeddedPiAgent(
             onReasoningEnd: params.onReasoningEnd,
             onToolResult: params.onToolResult,
             onAgentEvent: params.onAgentEvent,
-            extraSystemPrompt: params.extraSystemPrompt,
+            extraSystemPrompt: recoveryExtraSystemPrompt ?? params.extraSystemPrompt,
             inputProvenance: params.inputProvenance,
             streamParams: params.streamParams,
             ownerNumbers: params.ownerNumbers,
@@ -540,6 +546,43 @@ export async function runEmbeddedPiAgent(
             sessionIdUsed,
             lastAssistant,
           } = attempt;
+
+          // One-shot automatic recovery for certain recoverable tool errors.
+          // v1: edit exact-match failure can be recovered by reading the file head
+          // and retrying with a smaller/unique anchor. We do this only once to
+          // avoid loops and avoid mutating actions being repeated indefinitely.
+          if (!aborted && !recoverableToolRetryAttempted) {
+            const recoverable = classifyRecoverableToolError(attempt.lastToolError);
+            if (recoverable?.kind === "EDIT_EXACT_MATCH_NOT_FOUND" && recoverable.path) {
+              recoverableToolRetryAttempted = true;
+              try {
+                const raw = await fs.readFile(recoverable.path, "utf8");
+                const maxLines = 200;
+                const head = raw.split("\n").slice(0, maxLines).join("\n");
+                const base = params.extraSystemPrompt ? `${params.extraSystemPrompt}\n\n` : "";
+                recoveryExtraSystemPrompt =
+                  base +
+                  buildEditExactMatchRecoverySystemPrompt({
+                    path: recoverable.path,
+                    fileHead: head,
+                    maxLines,
+                  });
+                log.warn(
+                  `[recoverable-tool-error] Retrying once after ${recoverable.kind}: path=${recoverable.path}`,
+                );
+                continue;
+              } catch (err) {
+                log.warn(
+                  `[recoverable-tool-error] Recovery read failed for path=${recoverable.path}: ${String(err)}`,
+                );
+                // Fall through to normal handling.
+              }
+            }
+          }
+
+          // Clear recovery system prompt once an attempt completes without triggering a retry.
+          recoveryExtraSystemPrompt = undefined;
+
           const lastAssistantUsage = normalizeUsage(lastAssistant?.usage as UsageLike);
           const attemptUsage = attempt.attemptUsage ?? lastAssistantUsage;
           mergeUsageIntoAccumulator(usageAccumulator, attemptUsage);
