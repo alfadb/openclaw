@@ -1376,6 +1376,11 @@ export async function handleFeishuMessage(params: {
     markDispatchIdle();
 
     if (counts.final === 0) {
+      // Diagnostics: we had no final user-visible replies.
+      log(
+        `feishu[${account.accountId}]: no final reply (queuedFinal=${queuedFinal}, sawReplyStart=${sawReplyStart})`,
+      );
+
       if (queuedFinal) {
         await setFeishuStatus({
           cfg,
@@ -1406,11 +1411,22 @@ export async function handleFeishuMessage(params: {
         });
 
         // Minimal fallback (B): only when there is no user-visible reply.
+        // NOTE: This branch is about "no reply", not necessarily an API validation/permission error.
+        const repliedToFailureNotice =
+          typeof quotedContent === "string" &&
+          (quotedContent.includes("⚠️ 刚刚处理失败") ||
+            quotedContent.includes("服务重启被打断") ||
+            quotedContent.includes("你回复“继续”"));
+
+        const fallbackText = repliedToFailureNotice
+          ? "⚠️ 这次仍未产生可见回复（可能被中断/被策略抑制/发送失败）。你可以回复“继续”重试；若仍反复出现，建议 /new 开新会话。"
+          : "⚠️ 刚刚没有生成可见回复（不一定是权限/校验问题）。你回复“继续”我会按原任务重试；若反复出现，建议 /new。";
+
         await sendMessageFeishu({
           cfg,
           to: isGroup ? ctx.chatId : ctx.senderOpenId,
           replyToMessageId: anchorMessageId,
-          text: "⚠️ 刚刚处理失败（接口校验/权限问题），没能发出结果；你回复“继续”我会按原任务重试。",
+          text: fallbackText,
           accountId: account.accountId,
         });
 
