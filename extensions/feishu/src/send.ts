@@ -124,6 +124,61 @@ function buildFeishuPostMessagePayload(params: { messageText: string }): {
   };
 }
 
+function buildFeishuTextMessagePayload(params: { messageText: string }): {
+  content: string;
+  msgType: string;
+} {
+  const { messageText } = params;
+  return {
+    content: JSON.stringify({
+      text: messageText,
+    }),
+    msgType: "text",
+  };
+}
+
+async function sendWithPayload(params: {
+  client: ReturnType<typeof createFeishuClient>;
+  receiveId: string;
+  receiveIdType: string;
+  replyToMessageId?: string;
+  content: string;
+  msgType: string;
+  errorPrefix: string;
+}): Promise<FeishuSendResult> {
+  const { client, receiveId, receiveIdType, replyToMessageId, content, msgType, errorPrefix } =
+    params;
+
+  if (replyToMessageId) {
+    const response = await client.im.message.reply({
+      path: { message_id: replyToMessageId },
+      data: {
+        content,
+        msg_type: msgType,
+      },
+    });
+    assertFeishuMessageApiSuccess(response, errorPrefix);
+    return toFeishuSendResult(response, receiveId);
+  }
+
+  const response = await client.im.message.create({
+    params: { receive_id_type: receiveIdType },
+    data: {
+      receive_id: receiveId,
+      content,
+      msg_type: msgType,
+    },
+  });
+  assertFeishuMessageApiSuccess(response, errorPrefix);
+  return toFeishuSendResult(response, receiveId);
+}
+
+/**
+ * Best-effort sending with fallback: post(md) -> text(plain)
+ *
+ * Rationale: Feishu API sometimes rejects post/markdown payloads (validation),
+ * while plain text is broadly accepted. We prefer deliverability over formatting.
+ */
 export async function sendMessageFeishu(
   params: SendFeishuMessageParams,
 ): Promise<FeishuSendResult> {
@@ -152,30 +207,31 @@ export async function sendMessageFeishu(
   }
   const messageText = getFeishuRuntime().channel.text.convertMarkdownTables(rawText, tableMode);
 
-  const { content, msgType } = buildFeishuPostMessagePayload({ messageText });
-
-  if (replyToMessageId) {
-    const response = await client.im.message.reply({
-      path: { message_id: replyToMessageId },
-      data: {
-        content,
-        msg_type: msgType,
-      },
-    });
-    assertFeishuMessageApiSuccess(response, "Feishu reply failed");
-    return toFeishuSendResult(response, receiveId);
-  }
-
-  const response = await client.im.message.create({
-    params: { receive_id_type: receiveIdType },
-    data: {
-      receive_id: receiveId,
+  // 1) Preferred: post(md)
+  try {
+    const { content, msgType } = buildFeishuPostMessagePayload({ messageText });
+    return await sendWithPayload({
+      client,
+      receiveId,
+      receiveIdType,
+      replyToMessageId,
       content,
-      msg_type: msgType,
-    },
-  });
-  assertFeishuMessageApiSuccess(response, "Feishu send failed");
-  return toFeishuSendResult(response, receiveId);
+      msgType,
+      errorPrefix: "Feishu send failed",
+    });
+  } catch {
+    // 2) Fallback: plain text (best deliverability)
+    const { content, msgType } = buildFeishuTextMessagePayload({ messageText });
+    return await sendWithPayload({
+      client,
+      receiveId,
+      receiveIdType,
+      replyToMessageId,
+      content,
+      msgType,
+      errorPrefix: "Feishu send failed (fallback text)",
+    });
+  }
 }
 
 export type SendFeishuCardParams = {
@@ -293,7 +349,21 @@ export async function sendMarkdownCardFeishu(params: {
     cardText = buildMentionedCardContent(mentions, text);
   }
   const card = buildMarkdownCard(cardText);
-  return sendCardFeishu({ cfg, to, card, replyToMessageId, accountId });
+
+  // Prefer card for rich markdown rendering, but fall back to normal message
+  // to maximize deliverability (must-reach policy).
+  try {
+    return await sendCardFeishu({ cfg, to, card, replyToMessageId, accountId });
+  } catch {
+    return await sendMessageFeishu({
+      cfg,
+      to,
+      text,
+      replyToMessageId,
+      mentions,
+      accountId,
+    });
+  }
 }
 
 /**
