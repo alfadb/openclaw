@@ -1412,17 +1412,22 @@ export async function handleFeishuMessage(params: {
         });
 
         // Minimal fallback (B): only when there is no user-visible reply.
-        // Include concrete reason when we have it (deliver errors), otherwise be explicit that
-        // we did not capture a transport error and the issue may be "no final reply".
-        const reasonLine = deliverError
-          ? `原因：${String(deliverError).slice(0, 400)}`
-          : "原因：未捕获到投递错误；可能是模型未产出最终回复/被策略抑制/中断。";
+        // We classify the reason to reduce ambiguity and avoid misleading "permission/validation" blame.
+        const reasonKind = deliverError
+          ? "DeliverError"
+          : ctx.parentId
+            ? "NoFinalReply(QuotedReply)"
+            : "NoFinalReply";
+
+        const reasonDetail = deliverError
+          ? String(deliverError).slice(0, 400)
+          : "未捕获到投递错误；可能是模型未产出最终回复/被策略抑制/中断。";
 
         await sendMessageFeishu({
           cfg,
           to: isGroup ? ctx.chatId : ctx.senderOpenId,
           replyToMessageId: anchorMessageId,
-          text: `⚠️ 刚刚处理失败，没能发出结果；你回复“继续”我会按原任务重试。\n${reasonLine}`,
+          text: `⚠️ 刚刚处理失败，没能发出结果；你回复“继续”我会按原任务重试。\n原因类型：${reasonKind}\n原因详情：${reasonDetail}`,
           accountId: account.accountId,
         });
 

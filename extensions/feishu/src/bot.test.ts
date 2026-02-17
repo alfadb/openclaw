@@ -301,3 +301,104 @@ describe("handleFeishuMessage command authorization", () => {
     );
   });
 });
+
+describe("handleFeishuMessage no-final-reply fallback", () => {
+  let stateDir = "";
+  const mockFinalizeInboundContext = vi.fn((ctx: unknown) => ctx);
+  const mockDispatchReplyFromConfig = vi
+    .fn()
+    .mockResolvedValue({ queuedFinal: false, counts: { final: 0 } });
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-feishu-test-"));
+    setFeishuRuntime({
+      system: {
+        enqueueSystemEvent: vi.fn(),
+      },
+      state: {
+        resolveStateDir: () => stateDir,
+      },
+      channel: {
+        routing: {
+          resolveAgentRoute: vi.fn(() => ({
+            agentId: "main",
+            accountId: "default",
+            sessionKey: "agent:main:feishu:dm:ou-user",
+            matchedBy: "default",
+          })),
+        },
+        reply: {
+          resolveEnvelopeFormatOptions: vi.fn(() => ({ template: "channel+name+time" })),
+          formatAgentEnvelope: vi.fn((params: { body: string }) => params.body),
+          finalizeInboundContext: mockFinalizeInboundContext,
+          dispatchReplyFromConfig: mockDispatchReplyFromConfig,
+        },
+        commands: {
+          shouldComputeCommandAuthorized: vi.fn(() => false),
+          resolveCommandAuthorizedFromAuthorizers: vi.fn(() => true),
+        },
+        pairing: {
+          readAllowFromStore: vi.fn().mockResolvedValue(["ou-user"]),
+          upsertPairingRequest: vi.fn(),
+          buildPairingReply: vi.fn(),
+        },
+      },
+    } as unknown as PluginRuntime);
+  });
+
+  afterEach(async () => {
+    if (stateDir) {
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks quoted-reply no-final-reply as QuotedReply reason", async () => {
+    mockGetMessageFeishu.mockResolvedValueOnce({
+      messageId: "quoted",
+      chatId: "oc-dm",
+      content: "⚠️ 刚刚处理失败（接口校验/权限问题），没能发出结果；你回复“继续”我会按原任务重试。",
+      contentType: "text",
+    });
+
+    const cfg: ClawdbotConfig = {
+      channels: {
+        feishu: {
+          dmPolicy: "open",
+          allowFrom: ["ou-user"],
+        },
+      },
+    } as ClawdbotConfig;
+
+    const event: FeishuMessageEvent = {
+      sender: {
+        sender_id: {
+          open_id: "ou-user",
+        },
+      },
+      message: {
+        message_id: "msg-no-final-reply",
+        chat_id: "oc-dm",
+        chat_type: "p2p",
+        message_type: "text",
+        parent_id: "quoted",
+        content: JSON.stringify({ text: "再试试" }),
+      },
+    };
+
+    await handleFeishuMessage({
+      cfg,
+      event,
+      runtime: {
+        log: vi.fn(),
+        error: vi.fn(),
+      } as RuntimeEnv,
+    });
+
+    expect(mockSendMessageFeishu).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("原因类型：NoFinalReply(QuotedReply)"),
+      }),
+    );
+  });
+});
