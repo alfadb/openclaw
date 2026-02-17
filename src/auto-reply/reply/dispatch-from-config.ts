@@ -15,6 +15,7 @@ import type { FinalizedMsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
 import { shouldSkipDuplicateInbound } from "./inbound-dedupe.js";
+import { getFollowupQueueDepth } from "./queue.js";
 import type { ReplyDispatcher, ReplyDispatchKind } from "./reply-dispatcher.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
 
@@ -75,7 +76,10 @@ const resolveSessionTtsAuto = (
 };
 
 export type DispatchFromConfigResult = {
+  /** True when a user-visible final reply was queued for delivery (via dispatcher or routed reply). */
   queuedFinal: boolean;
+  /** True when this inbound message was accepted but queued into the followup/backlog queue (no immediate reply). */
+  queuedFollowup: boolean;
   counts: Record<ReplyDispatchKind, number>;
 };
 
@@ -94,6 +98,11 @@ export async function dispatchReplyFromConfig(params: {
   const sessionKey = ctx.SessionKey;
   const startTime = diagnosticsEnabled ? Date.now() : 0;
   const canTrackSession = diagnosticsEnabled && Boolean(sessionKey);
+
+  // When the embedded agent is already running, followup-mode messages are enqueued
+  // and getReplyFromConfig returns undefined immediately. In that case, we want the
+  // channel integration to treat this as "queued" (and avoid "NoFinalReply" fallbacks).
+  const followupDepthBefore = sessionKey ? getFollowupQueueDepth(sessionKey) : 0;
 
   const recordProcessed = (
     outcome: "completed" | "skipped" | "error",
@@ -142,7 +151,7 @@ export async function dispatchReplyFromConfig(params: {
 
   if (shouldSkipDuplicateInbound(ctx)) {
     recordProcessed("skipped", { reason: "duplicate" });
-    return { queuedFinal: false, counts: dispatcher.getQueuedCounts() };
+    return { queuedFinal: false, queuedFollowup: false, counts: dispatcher.getQueuedCounts() };
   }
 
   const inboundAudio = isInboundAudioContext(ctx);
@@ -246,6 +255,8 @@ export async function dispatchReplyFromConfig(params: {
     }
   };
 
+  const queueKey = sessionKey?.trim();
+
   markProcessing();
 
   try {
@@ -282,7 +293,7 @@ export async function dispatchReplyFromConfig(params: {
       counts.final += routedFinalCount;
       recordProcessed("completed", { reason: "fast_abort" });
       markIdle("message_completed");
-      return { queuedFinal, counts };
+      return { queuedFinal, queuedFollowup: false, counts };
     }
 
     // Track accumulated block text for TTS generation after streaming completes.
@@ -372,7 +383,13 @@ export async function dispatchReplyFromConfig(params: {
 
     const replies = replyResult ? (Array.isArray(replyResult) ? replyResult : [replyResult]) : [];
 
-    let queuedFinal = false;
+    const followupDepthAfter = queueKey ? getFollowupQueueDepth(queueKey) : followupDepthBefore;
+    // If we're already actively running and queue mode is followup/collect/steer, runReplyAgent()
+    // intentionally returns undefined (no immediate reply) after enqueueing the followup run.
+    // Detect that case so channel integrations can avoid false "NoFinalReply" fallbacks.
+    const queuedFollowup = replies.length === 0 && followupDepthAfter > followupDepthBefore;
+
+    let queuedFinal = queuedFollowup;
     let routedFinalCount = 0;
     for (const reply of replies) {
       const ttsReply = await maybeApplyTtsToPayload({
@@ -469,7 +486,7 @@ export async function dispatchReplyFromConfig(params: {
     counts.final += routedFinalCount;
     recordProcessed("completed");
     markIdle("message_completed");
-    return { queuedFinal, counts };
+    return { queuedFinal, queuedFollowup, counts };
   } catch (err) {
     recordProcessed("error", { error: String(err) });
     markIdle("message_error");

@@ -26,6 +26,10 @@ const hookMocks = vi.hoisted(() => ({
   },
 }));
 
+const queueMocks = vi.hoisted(() => ({
+  getFollowupQueueDepth: vi.fn((_: string) => 0),
+}));
+
 vi.mock("./route-reply.js", () => ({
   isRoutableChannel: (channel: string | undefined) =>
     Boolean(
@@ -56,6 +60,10 @@ vi.mock("../../plugins/hook-runner-global.js", () => ({
   getGlobalHookRunner: () => hookMocks.runner,
 }));
 
+vi.mock("./queue.js", () => ({
+  getFollowupQueueDepth: queueMocks.getFollowupQueueDepth,
+}));
+
 const { dispatchReplyFromConfig } = await import("./dispatch-from-config.js");
 const { resetInboundDedupe } = await import("./inbound-dedupe.js");
 
@@ -68,6 +76,7 @@ function createDispatcher(): ReplyDispatcher {
     sendToolResult: vi.fn(() => true),
     sendBlockReply: vi.fn(() => true),
     sendFinalReply: vi.fn(() => true),
+    noteExternalFinalSent: vi.fn(),
     waitForIdle: vi.fn(async () => {}),
     getQueuedCounts: vi.fn(() => ({ tool: 0, block: 0, final: 0 })),
     markComplete: vi.fn(),
@@ -104,6 +113,8 @@ describe("dispatchReplyFromConfig", () => {
     hookMocks.runner.hasHooks.mockReset();
     hookMocks.runner.hasHooks.mockReturnValue(false);
     hookMocks.runner.runMessageReceived.mockReset();
+    queueMocks.getFollowupQueueDepth.mockReset();
+    queueMocks.getFollowupQueueDepth.mockImplementation((_: string) => 0);
   });
   it("does not route when Provider matches OriginatingChannel (even if Surface is missing)", async () => {
     setNoAbort();
@@ -217,6 +228,30 @@ describe("dispatchReplyFromConfig", () => {
 
     await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
     expect(dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats followup-queued runs as queuedFinal when replyResolver returns undefined", async () => {
+    setNoAbort();
+    const cfg = emptyConfig;
+    const dispatcher = createDispatcher();
+    const ctx = buildTestCtx({
+      Provider: "feishu",
+      Surface: "feishu",
+      SessionKey: "agent:main:feishu:dm:ou-user",
+      OriginatingChannel: "feishu",
+      OriginatingTo: "user:ou-user",
+    });
+
+    // Before dispatch: 0 queued. After: 1 queued.
+    queueMocks.getFollowupQueueDepth
+      .mockImplementationOnce(() => 0)
+      .mockImplementationOnce(() => 1);
+
+    const replyResolver = async () => undefined;
+
+    const result = await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
+    expect(result.queuedFinal).toBe(true);
+    expect(result.counts.final).toBe(0);
   });
 
   it("suppresses group tool summaries but still forwards tool media", async () => {

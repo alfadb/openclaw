@@ -1367,12 +1367,13 @@ export async function handleFeishuMessage(params: {
 
     log(`feishu[${account.accountId}]: dispatching to agent (session=${route.sessionKey})`);
 
-    const { queuedFinal, counts } = await core.channel.reply.dispatchReplyFromConfig({
-      ctx: ctxPayload,
-      cfg,
-      dispatcher,
-      replyOptions,
-    });
+    const { queuedFinal, queuedFollowup, counts } =
+      await core.channel.reply.dispatchReplyFromConfig({
+        ctx: ctxPayload,
+        cfg,
+        dispatcher,
+        replyOptions,
+      });
 
     markDispatchIdle();
 
@@ -1380,9 +1381,13 @@ export async function handleFeishuMessage(params: {
 
     if (counts.final === 0) {
       log(
-        `feishu[${account.accountId}]: no final reply (queuedFinal=${queuedFinal}, counts=${JSON.stringify(counts)}, deliverError=${deliverError ? JSON.stringify(deliverError) : ""})`,
+        `feishu[${account.accountId}]: no final reply (queuedFinal=${queuedFinal}, queuedFollowup=${queuedFollowup}, counts=${JSON.stringify(counts)}, deliverError=${deliverError ? JSON.stringify(deliverError) : ""})`,
       );
-      if (queuedFinal) {
+
+      // If the message was enqueued into the followup/backlog queue (because a previous
+      // message is still being processed), this is not an error and we must not emit a
+      // "NoFinalReply" fallback message.
+      if (queuedFinal || queuedFollowup) {
         await setFeishuStatus({
           cfg,
           runtime,

@@ -33,7 +33,7 @@ describe("handleFeishuMessage command authorization", () => {
   const mockFinalizeInboundContext = vi.fn((ctx: unknown) => ctx);
   const mockDispatchReplyFromConfig = vi
     .fn()
-    .mockResolvedValue({ queuedFinal: false, counts: { final: 1 } });
+    .mockResolvedValue({ queuedFinal: false, queuedFollowup: false, counts: { final: 1 } });
   const mockResolveCommandAuthorizedFromAuthorizers = vi.fn(() => false);
   const mockShouldComputeCommandAuthorized = vi.fn(() => true);
   const mockReadAllowFromStore = vi.fn().mockResolvedValue([]);
@@ -307,7 +307,7 @@ describe("handleFeishuMessage no-final-reply fallback", () => {
   const mockFinalizeInboundContext = vi.fn((ctx: unknown) => ctx);
   const mockDispatchReplyFromConfig = vi
     .fn()
-    .mockResolvedValue({ queuedFinal: false, counts: { final: 0 } });
+    .mockResolvedValue({ queuedFinal: false, queuedFollowup: false, counts: { final: 0 } });
 
   beforeEach(async () => {
     vi.clearAllMocks();
