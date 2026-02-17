@@ -14,6 +14,92 @@ const GUARD_TRUNCATION_SUFFIX =
   "\n\n⚠️ [Content truncated during persistence — original exceeded size limit. " +
   "Use offset/limit parameters or request specific sections for large content.]";
 
+const RECOVERABLE_ERROR_HINT_PREFIX = "\n\n[RECOVERABLE_TOOL_ERROR]";
+
+function getToolResultTextBlocks(msg: AgentMessage): TextContent[] {
+  const role = (msg as { role?: string }).role;
+  if (role !== "toolResult") {
+    return [];
+  }
+  const content = (msg as { content?: unknown }).content;
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.filter(
+    (block): block is TextContent =>
+      Boolean(block) &&
+      typeof block === "object" &&
+      (block as { type?: string }).type === "text" &&
+      typeof (block as TextContent).text === "string",
+  );
+}
+
+function appendToolResultHint(msg: AgentMessage, hint: string): AgentMessage {
+  const role = (msg as { role?: string }).role;
+  if (role !== "toolResult") {
+    return msg;
+  }
+  const content = (msg as { content?: unknown }).content;
+  if (!Array.isArray(content)) {
+    return msg;
+  }
+  return {
+    ...msg,
+    content: [...content, { type: "text", text: hint }],
+  } as AgentMessage;
+}
+
+function annotateRecoverableToolErrors(
+  msg: AgentMessage,
+  meta: { toolCallId?: string; toolName?: string; isSynthetic?: boolean },
+): AgentMessage {
+  // Only annotate real tool results (not synthetic placeholders).
+  if (meta.isSynthetic) {
+    return msg;
+  }
+  const role = (msg as { role?: string }).role;
+  if (role !== "toolResult") {
+    return msg;
+  }
+
+  const toolName = (meta.toolName ?? (msg as { toolName?: string }).toolName ?? "")
+    .trim()
+    .toLowerCase();
+  const isError = Boolean((msg as { isError?: boolean }).isError);
+  if (!isError) {
+    return msg;
+  }
+
+  // Avoid adding duplicate annotations if we already annotated this tool result.
+  const existingText = getToolResultTextBlocks(msg)
+    .map((b) => b.text)
+    .join("\n");
+  if (existingText.includes(RECOVERABLE_ERROR_HINT_PREFIX)) {
+    return msg;
+  }
+
+  // v1: edit exact-match failure is recoverable by reading file + retry with shorter anchor.
+  if (toolName === "edit") {
+    const matchNotFound = /Could not find the exact text\b/i.test(existingText);
+    if (matchNotFound) {
+      const fileMatch = existingText.match(/Could not find the exact text in ([^\n.]+)\./i);
+      const filePath = fileMatch?.[1]?.trim();
+      const hintLines = [
+        RECOVERABLE_ERROR_HINT_PREFIX,
+        "kind: EDIT_EXACT_MATCH_NOT_FOUND",
+        filePath ? `path: ${filePath}` : undefined,
+        "suggested_recovery:",
+        "- call read(path) to fetch the current file content (head 100-200 lines)",
+        "- retry edit with a smaller/unique oldText anchor (e.g. only the header line)",
+        "- if still failing, rebuild the full updated content and use write as a fallback (ask first if risky)",
+      ].filter(Boolean);
+      return appendToolResultHint(msg, hintLines.join("\n"));
+    }
+  }
+
+  return msg;
+}
+
 /**
  * Truncate oversized text content blocks in a tool result message.
  * Returns the original message if under the limit, or a new message with
@@ -121,7 +207,8 @@ export function installSessionToolResultGuard(
     meta: { toolCallId?: string; toolName?: string; isSynthetic?: boolean },
   ) => {
     const transformer = opts?.transformToolResultForPersistence;
-    return transformer ? transformer(message, meta) : message;
+    const transformed = transformer ? transformer(message, meta) : message;
+    return annotateRecoverableToolErrors(transformed, meta);
   };
 
   const allowSyntheticToolResults = opts?.allowSyntheticToolResults ?? true;
