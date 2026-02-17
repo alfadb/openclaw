@@ -1427,7 +1427,7 @@ export async function handleFeishuMessage(params: {
           cfg,
           to: isGroup ? ctx.chatId : ctx.senderOpenId,
           replyToMessageId: anchorMessageId,
-          text: `⚠️ 刚刚处理失败，没能发出结果；你回复“继续”我会按原任务重试。\n原因类型：${reasonKind}\n原因详情：${reasonDetail}`,
+          text: `⚠️ 本次未产生可见的最终回复（final），我先按兜底提示你；你回复“继续”我会按原任务重试。\n原因类型：${reasonKind}\n原因详情：${reasonDetail}`,
           accountId: account.accountId,
         });
 
