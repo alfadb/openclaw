@@ -84,10 +84,25 @@ function annotateRecoverableToolErrors(
     if (matchNotFound) {
       const fileMatch = existingText.match(/Could not find the exact text in ([^\n.]+)\./i);
       const filePath = fileMatch?.[1]?.trim();
+      const payload = {
+        kind: "EDIT_EXACT_MATCH_NOT_FOUND",
+        toolName: "edit",
+        toolCallId: meta.toolCallId,
+        path: filePath,
+        suggestedRecovery: [
+          "read(path) to fetch the current file content (head 100-200 lines)",
+          "retry edit with a smaller/unique oldText anchor (e.g. only the header line)",
+          "if still failing, rebuild the updated content and use write as fallback (ask first if risky)",
+        ],
+      };
       const hintLines = [
         RECOVERABLE_ERROR_HINT_PREFIX,
         "kind: EDIT_EXACT_MATCH_NOT_FOUND",
         filePath ? `path: ${filePath}` : undefined,
+        "recovery_payload_json:",
+        "```json",
+        JSON.stringify(payload, null, 2),
+        "```",
         "suggested_recovery:",
         "- call read(path) to fetch the current file content (head 100-200 lines)",
         "- retry edit with a smaller/unique oldText anchor (e.g. only the header line)",
