@@ -1283,44 +1283,18 @@ export async function handleFeishuMessage(params: {
 
     let sawReplyStart = false;
 
-    const { dispatcher, replyOptions, markDispatchIdle } = createFeishuReplyDispatcher({
-      cfg,
-      agentId: route.agentId,
-      runtime: runtime as RuntimeEnv,
-      chatId: ctx.chatId,
-      replyToMessageId: anchorMessageId,
-      mentionTargets: ctx.mentionTargets,
-      accountId: account.accountId,
-      statusCallbacks: {
-        onReplyStart: async () => {
-          sawReplyStart = true;
-          await setFeishuStatus({
-            cfg,
-            runtime,
-            stateDir,
-            accountId: account.accountId,
-            chatId: ctx.chatId,
-            chatType: isGroup ? "group" : "direct",
-            userOpenId: ctx.senderOpenId,
-            messageId: anchorMessageId,
-            taskId: inFlightTaskId,
-            nextState: "working",
-            nextEmojiType: FeishuEmoji.ON_IT,
-          });
-        },
-        onIdle: async () => {
-          // Best-effort: if we're still in a working/waiting state, mark DONE and clear.
-          try {
-            const { filePath, store } = await readFeishuInFlightStore({
-              stateDir,
-              accountId: account.accountId,
-            });
-            if (!sawReplyStart) {
-              return;
-            }
-            const task = store.tasks.find((t) => t.id === inFlightTaskId);
-            if (!task) return;
-            if (["done", "failed", "interrupted"].includes(task.state)) return;
+    const { dispatcher, replyOptions, markDispatchIdle, getLastDeliverError } =
+      createFeishuReplyDispatcher({
+        cfg,
+        agentId: route.agentId,
+        runtime: runtime as RuntimeEnv,
+        chatId: ctx.chatId,
+        replyToMessageId: anchorMessageId,
+        mentionTargets: ctx.mentionTargets,
+        accountId: account.accountId,
+        statusCallbacks: {
+          onReplyStart: async () => {
+            sawReplyStart = true;
             await setFeishuStatus({
               cfg,
               runtime,
@@ -1331,23 +1305,50 @@ export async function handleFeishuMessage(params: {
               userOpenId: ctx.senderOpenId,
               messageId: anchorMessageId,
               taskId: inFlightTaskId,
-              nextState: "done",
-              nextEmojiType: FeishuEmoji.DONE,
+              nextState: "working",
+              nextEmojiType: FeishuEmoji.ON_IT,
             });
-            const { filePath: fp2, store: st2 } = await readFeishuInFlightStore({
-              stateDir,
-              accountId: account.accountId,
-            });
-            await writeFeishuInFlightStore({
-              filePath: fp2,
-              store: removeTask(st2, inFlightTaskId),
-            });
-          } catch {
-            // ignore
-          }
+          },
+          onIdle: async () => {
+            // Best-effort: if we're still in a working/waiting state, mark DONE and clear.
+            try {
+              const { filePath, store } = await readFeishuInFlightStore({
+                stateDir,
+                accountId: account.accountId,
+              });
+              if (!sawReplyStart) {
+                return;
+              }
+              const task = store.tasks.find((t) => t.id === inFlightTaskId);
+              if (!task) return;
+              if (["done", "failed", "interrupted"].includes(task.state)) return;
+              await setFeishuStatus({
+                cfg,
+                runtime,
+                stateDir,
+                accountId: account.accountId,
+                chatId: ctx.chatId,
+                chatType: isGroup ? "group" : "direct",
+                userOpenId: ctx.senderOpenId,
+                messageId: anchorMessageId,
+                taskId: inFlightTaskId,
+                nextState: "done",
+                nextEmojiType: FeishuEmoji.DONE,
+              });
+              const { filePath: fp2, store: st2 } = await readFeishuInFlightStore({
+                stateDir,
+                accountId: account.accountId,
+              });
+              await writeFeishuInFlightStore({
+                filePath: fp2,
+                store: removeTask(st2, inFlightTaskId),
+              });
+            } catch {
+              // ignore
+            }
+          },
         },
-      },
-    });
+      });
 
     // Mark queued (we have accepted the work; actual typing will start on reply generation).
     await setFeishuStatus({
@@ -1375,7 +1376,12 @@ export async function handleFeishuMessage(params: {
 
     markDispatchIdle();
 
+    const deliverError = getLastDeliverError?.() ?? null;
+
     if (counts.final === 0) {
+      log(
+        `feishu[${account.accountId}]: no final reply (queuedFinal=${queuedFinal}, counts=${JSON.stringify(counts)}, deliverError=${deliverError ? JSON.stringify(deliverError) : ""})`,
+      );
       if (queuedFinal) {
         await setFeishuStatus({
           cfg,
@@ -1406,11 +1412,17 @@ export async function handleFeishuMessage(params: {
         });
 
         // Minimal fallback (B): only when there is no user-visible reply.
+        // Include concrete reason when we have it (deliver errors), otherwise be explicit that
+        // we did not capture a transport error and the issue may be "no final reply".
+        const reasonLine = deliverError
+          ? `原因：${String(deliverError).slice(0, 400)}`
+          : "原因：未捕获到投递错误；可能是模型未产出最终回复/被策略抑制/中断。";
+
         await sendMessageFeishu({
           cfg,
           to: isGroup ? ctx.chatId : ctx.senderOpenId,
           replyToMessageId: anchorMessageId,
-          text: "⚠️ 刚刚处理失败（接口校验/权限问题），没能发出结果；你回复“继续”我会按原任务重试。",
+          text: `⚠️ 刚刚处理失败，没能发出结果；你回复“继续”我会按原任务重试。\n${reasonLine}`,
           accountId: account.accountId,
         });
 

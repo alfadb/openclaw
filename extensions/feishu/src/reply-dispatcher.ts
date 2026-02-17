@@ -42,6 +42,7 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
   const account = resolveFeishuAccount({ cfg, accountId });
   const prefixContext = createReplyPrefixContext({ cfg, agentId });
 
+  let lastDeliverError: string | null = null;
   let typingState: TypingIndicatorState | null = null;
   const typingCallbacks = createTypingCallbacks({
     start: async () => {
@@ -216,9 +217,8 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         }
       },
       onError: async (error, info) => {
-        params.runtime.error?.(
-          `feishu[${account.accountId}] ${info.kind} reply failed: ${String(error)}`,
-        );
+        lastDeliverError = `${info.kind} reply failed: ${String(error)}`;
+        params.runtime.error?.(`feishu[${account.accountId}] ${lastDeliverError}`);
         await closeStreaming();
         typingCallbacks.onIdle?.();
         // Best-effort: ensure status callback sees the failure/idle transition.
@@ -259,5 +259,6 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         : undefined,
     },
     markDispatchIdle,
+    getLastDeliverError: () => lastDeliverError,
   };
 }
