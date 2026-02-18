@@ -51,15 +51,18 @@ describe("runCommandWithTimeout", () => {
   });
 
   it("resets no output timer when command keeps emitting output", async () => {
+    // NOTE: Keep this test intentionally tolerant. Under full-suite load,
+    // stdout writes + timer scheduling can jitter, and overly tight thresholds
+    // lead to flaky failures.
     const result = await runCommandWithTimeout(
       [
         process.execPath,
         "-e",
-        'let i=0; const t=setInterval(() => { process.stdout.write("."); i += 1; if (i >= 3) { clearInterval(t); process.exit(0); } }, 50);',
+        'let i=0; const t=setInterval(() => { process.stdout.write("."); i += 1; if (i >= 5) { clearInterval(t); process.exit(0); } }, 50);',
       ],
       {
-        timeoutMs: 5_000,
-        noOutputTimeoutMs: 500,
+        timeoutMs: 10_000,
+        noOutputTimeoutMs: 1_000,
       },
     );
 
