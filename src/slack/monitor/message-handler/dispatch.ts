@@ -192,14 +192,24 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
           return;
         }
 
-        streamSession = await startSlackStream({
-          client: ctx.app.client,
-          channel: message.channel,
-          threadTs: streamThreadTs,
-          text,
-        });
-        replyPlan.markSent();
-        return;
+        try {
+          streamSession = await startSlackStream({
+            client: ctx.app.client,
+            channel: message.channel,
+            threadTs: streamThreadTs,
+            text,
+          });
+          replyPlan.markSent();
+          return;
+        } catch (err) {
+          runtime.error?.(
+            danger(`slack-stream: streaming API call failed: ${String(err)}, falling back`),
+          );
+          streamFailed = true;
+          // IMPORTANT: reuse the thread ts we already consumed for replyToMode=first.
+          await deliverNormally(payload, streamThreadTs);
+          return;
+        }
       }
 
       await appendSlackStream({
@@ -292,13 +302,20 @@ export async function dispatchPreparedSlackMessage(prepared: PreparedSlackMessag
     onIdle: typingCallbacks.onIdle,
   });
 
+  const draftThreadTs = incomingThreadTs ?? (ctx.replyToMode === "off" ? undefined : messageTs);
   const draftStream = createSlackDraftStream({
     target: prepared.replyTarget,
     token: ctx.botToken,
     accountId: account.accountId,
     maxChars: Math.min(ctx.textLimit, 4000),
-    resolveThreadTs: () => replyPlan.nextThreadTs(),
-    onMessageSent: () => replyPlan.markSent(),
+    // IMPORTANT: draft preview messages must not consume the "first" reply thread reference.
+    // Otherwise replyToMode=first would thread the preview and leave the actual first reply off-thread.
+    resolveThreadTs: () => draftThreadTs,
+    onMessageSent: () => {
+      if (ctx.replyToMode === "all") {
+        replyPlan.markSent();
+      }
+    },
     log: logVerbose,
     warn: logVerbose,
   });
