@@ -1,9 +1,10 @@
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk";
+import { resolveFeishuAccount } from "./accounts.js";
 import { readFeishuInFlightStore, removeTask, writeFeishuInFlightStore } from "./inflight-store.js";
 import { sendMediaFeishu } from "./media.js";
 import { FeishuEmoji } from "./reactions.js";
 import { getFeishuRuntime } from "./runtime.js";
-import { sendMessageFeishu } from "./send.js";
+import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
 import { replaceStatusReaction } from "./status-reaction.js";
 
 async function maybeFinalizeWaitingInFlightTask(params: {
@@ -51,18 +52,53 @@ async function maybeFinalizeWaitingInFlightTask(params: {
   }
 }
 
+function shouldUseCard(text: string): boolean {
+  return /```[\s\S]*?```/.test(text) || /\|.+\|[\r\n]+\|[-:| ]+\|/.test(text);
+}
+
+async function sendTextWithRenderMode(params: {
+  cfg: Parameters<typeof sendMessageFeishu>[0]["cfg"];
+  to: string;
+  text: string;
+  accountId?: string | null;
+  replyToId?: string | null;
+}) {
+  const { cfg, to, text, accountId, replyToId } = params;
+  const account = resolveFeishuAccount({ cfg, accountId: accountId ?? undefined });
+  const renderMode = account.config?.renderMode ?? "auto";
+  const useCard = renderMode === "card" || (renderMode === "auto" && shouldUseCard(text));
+
+  if (useCard) {
+    return sendMarkdownCardFeishu({
+      cfg,
+      to,
+      text,
+      replyToMessageId: replyToId ?? undefined,
+      accountId: accountId ?? undefined,
+    });
+  }
+
+  return sendMessageFeishu({
+    cfg,
+    to,
+    text,
+    replyToMessageId: replyToId ?? undefined,
+    accountId: accountId ?? undefined,
+  });
+}
+
 export const feishuOutbound: ChannelOutboundAdapter = {
   deliveryMode: "direct",
   chunker: (text, limit) => getFeishuRuntime().channel.text.chunkMarkdownText(text, limit),
   chunkerMode: "markdown",
   textChunkLimit: 4000,
   sendText: async ({ cfg, to, text, accountId, replyToId }) => {
-    const result = await sendMessageFeishu({
+    const result = await sendTextWithRenderMode({
       cfg,
       to,
       text,
-      replyToMessageId: replyToId ?? undefined,
-      accountId: accountId ?? undefined,
+      accountId: accountId ?? null,
+      replyToId: replyToId ?? null,
     });
 
     await maybeFinalizeWaitingInFlightTask({
@@ -76,12 +112,12 @@ export const feishuOutbound: ChannelOutboundAdapter = {
   sendMedia: async ({ cfg, to, text, mediaUrl, accountId, replyToId }) => {
     // Send text first if provided
     if (text?.trim()) {
-      await sendMessageFeishu({
+      await sendTextWithRenderMode({
         cfg,
         to,
         text,
-        replyToMessageId: replyToId ?? undefined,
-        accountId: accountId ?? undefined,
+        accountId: accountId ?? null,
+        replyToId: replyToId ?? null,
       });
     }
 
@@ -107,12 +143,12 @@ export const feishuOutbound: ChannelOutboundAdapter = {
         console.error(`[feishu] sendMediaFeishu failed:`, err);
         // Fallback to URL link if upload fails
         const fallbackText = `📎 ${mediaUrl}`;
-        const result = await sendMessageFeishu({
+        const result = await sendTextWithRenderMode({
           cfg,
           to,
           text: fallbackText,
-          replyToMessageId: replyToId ?? undefined,
-          accountId: accountId ?? undefined,
+          accountId: accountId ?? null,
+          replyToId: replyToId ?? null,
         });
 
         await maybeFinalizeWaitingInFlightTask({
@@ -126,12 +162,12 @@ export const feishuOutbound: ChannelOutboundAdapter = {
     }
 
     // No media URL, just return text result
-    const result = await sendMessageFeishu({
+    const result = await sendTextWithRenderMode({
       cfg,
       to,
       text: text ?? "",
-      replyToMessageId: replyToId ?? undefined,
-      accountId: accountId ?? undefined,
+      accountId: accountId ?? null,
+      replyToId: replyToId ?? null,
     });
 
     await maybeFinalizeWaitingInFlightTask({
