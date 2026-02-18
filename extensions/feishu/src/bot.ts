@@ -1377,11 +1377,13 @@ export async function handleFeishuMessage(params: {
 
     markDispatchIdle();
 
-    const deliverError = getLastDeliverError?.() ?? null;
+    let deliverError = getLastDeliverError?.() ?? null;
 
-    if (counts.final === 0) {
+    const visibleReplies = (counts.final ?? 0) + (counts.block ?? 0) + (counts.tool ?? 0);
+
+    if (visibleReplies === 0) {
       log(
-        `feishu[${account.accountId}]: no final reply (queuedFinal=${queuedFinal}, queuedFollowup=${queuedFollowup}, counts=${JSON.stringify(counts)}, deliverError=${deliverError ? JSON.stringify(deliverError) : ""})`,
+        `feishu[${account.accountId}]: no visible reply (queuedFinal=${queuedFinal}, queuedFollowup=${queuedFollowup}, counts=${JSON.stringify(counts)}, deliverError=${deliverError ? JSON.stringify(deliverError) : ""})`,
       );
 
       // If the message was enqueued into the followup/backlog queue (because a previous
@@ -1415,6 +1417,11 @@ export async function handleFeishuMessage(params: {
           nextState: "failed",
           nextEmojiType: FeishuEmoji.ERROR,
         });
+
+        // Small grace window: some providers report deliver errors slightly after dispatch returns.
+        // If an error appears, prefer "DeliverError" classification over generic NoFinalReply.
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        deliverError = deliverError ?? getLastDeliverError?.() ?? null;
 
         // Minimal fallback (B): only when there is no user-visible reply.
         // We classify the reason to reduce ambiguity and avoid misleading "permission/validation" blame.
