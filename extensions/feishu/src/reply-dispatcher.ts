@@ -11,6 +11,7 @@ import { createFeishuClient } from "./client.js";
 import type { MentionTarget } from "./mention.js";
 import { buildMentionedCardContent } from "./mention.js";
 import { getFeishuRuntime } from "./runtime.js";
+import { sanitizeForFeishu } from "./sanitize.js";
 import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
 import { FeishuStreamingSession } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
@@ -158,10 +159,15 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         void typingCallbacks.onReplyStart?.();
       },
       deliver: async (payload: ReplyPayload, info) => {
-        const text = payload.text ?? "";
+        let text = payload.text ?? "";
         if (!text.trim()) {
           return;
         }
+
+        // Feishu post/card markdown may truncate very long unbroken tokens.
+        // Apply a conservative sanitizer before chunking/sending.
+        // (Best-effort: no semantic changes expected for normal prose.)
+        text = sanitizeForFeishu(text);
 
         const useCard = renderMode === "card" || (renderMode === "auto" && shouldUseCard(text));
 
