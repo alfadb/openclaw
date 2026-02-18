@@ -354,7 +354,10 @@ export async function sendMarkdownCardFeishu(params: {
   // to maximize deliverability (must-reach policy).
   try {
     return await sendCardFeishu({ cfg, to, card, replyToMessageId, accountId });
-  } catch {
+  } catch (err) {
+    // NOTE: This used to silently fall back, which made it hard to debug why
+    // some Feishu messages didn't render as cards.
+    console.error(`[feishu] sendMarkdownCardFeishu failed, falling back to text: ${String(err)}`);
     return await sendMessageFeishu({
       cfg,
       to,

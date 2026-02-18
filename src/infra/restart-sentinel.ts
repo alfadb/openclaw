@@ -113,17 +113,24 @@ export function formatRestartSentinelMessage(payload: RestartSentinelPayload): s
   if (message && !payload.stats) {
     return message;
   }
-  const lines: string[] = [summarizeRestartSentinel(payload)];
+
+  // Markdown-friendly formatting so channels that support cards can render clearly.
+  // (Feishu: interactive card markdown; others: plain text with reasonable readability.)
+  const lines: string[] = [`**${summarizeRestartSentinel(payload)}**`];
+
   if (message) {
     lines.push(message);
   }
+
   const reason = payload.stats?.reason?.trim();
   if (reason) {
-    lines.push(`Reason: ${reason}`);
+    lines.push(`- Reason: ${reason}`);
   }
+
   if (payload.doctorHint?.trim()) {
-    lines.push(payload.doctorHint.trim());
+    lines.push(`- ${payload.doctorHint.trim()}`);
   }
+
   return lines.join("\n");
 }
 
