@@ -353,7 +353,7 @@ describe("handleFeishuMessage no-final-reply fallback", () => {
     }
   });
 
-  it("marks quoted-reply no-final-reply as QuotedReply reason", async () => {
+  it("dedupes failure notice when replying to prior failure notice", async () => {
     mockGetMessageFeishu.mockResolvedValueOnce({
       messageId: "quoted",
       chatId: "oc-dm",
@@ -395,9 +395,10 @@ describe("handleFeishuMessage no-final-reply fallback", () => {
       } as RuntimeEnv,
     });
 
+    expect(mockGetMessageFeishu).toHaveBeenCalled();
     expect(mockSendMessageFeishu).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: expect.stringContaining("原因类型：NoFinalReply(QuotedReply)"),
+        text: expect.stringContaining("仍未产生可见回复"),
       }),
     );
   });

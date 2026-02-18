@@ -1419,27 +1419,25 @@ export async function handleFeishuMessage(params: {
         });
 
         // Small grace window: some providers report deliver errors slightly after dispatch returns.
-        // If an error appears, prefer "DeliverError" classification over generic NoFinalReply.
         await new Promise((resolve) => setTimeout(resolve, 500));
         deliverError = deliverError ?? getLastDeliverError?.() ?? null;
 
-        // Minimal fallback (B): only when there is no user-visible reply.
-        // We classify the reason to reduce ambiguity and avoid misleading "permission/validation" blame.
-        const reasonKind = deliverError
-          ? "DeliverError"
-          : ctx.parentId
-            ? "NoFinalReply(QuotedReply)"
-            : "NoFinalReply";
+        // Avoid repeating the same failure notice when the user is replying to a prior failure notice.
+        const repliedToFailureNotice =
+          typeof quotedContent === "string" &&
+          (quotedContent.includes("⚠️ 刚刚处理失败") ||
+            quotedContent.includes("服务重启被打断") ||
+            quotedContent.includes("你回复“继续”"));
 
-        const reasonDetail = deliverError
-          ? String(deliverError).slice(0, 400)
-          : "未捕获到投递错误；可能是模型未产出最终回复/被策略抑制/中断。";
+        const fallbackText = repliedToFailureNotice
+          ? "⚠️ 这次仍未产生可见回复（可能被中断/被策略抑制/发送失败）。你可以回复“继续”重试；若仍反复出现，建议 /new 开新会话。"
+          : "⚠️ 刚刚没有生成可见回复（不一定是权限/校验问题）。你回复“继续”我会按原任务重试；若反复出现，建议 /new。";
 
         await sendMessageFeishu({
           cfg,
           to: isGroup ? ctx.chatId : ctx.senderOpenId,
           replyToMessageId: anchorMessageId,
-          text: `⚠️ 本次未产生可见的最终回复（final），我先按兜底提示你；你回复“继续”我会按原任务重试。\n原因类型：${reasonKind}\n原因详情：${reasonDetail}`,
+          text: fallbackText,
           accountId: account.accountId,
         });
 
